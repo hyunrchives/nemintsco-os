@@ -307,7 +307,6 @@ export default function Dashboard({ session }) {
             <RefreshCw size={18} />
           </button>
           
-          {/* 🔒 ONLY ADMIN (Elen) CAN SEE THE DELETE BUTTON */}
           {isAdmin && (
             <button onClick={clearCurrentDate} className="btn-icon danger" title="Delete this day's records">
               <Trash2 size={18} />
