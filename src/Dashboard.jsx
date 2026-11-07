@@ -15,7 +15,7 @@ export default function Dashboard({ session }) {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
 
-  // 🔒 CHECK IF LOGGED IN USER IS ADMIN (ELEN)
+  // 🔒 CHECK IF LOGGED IN USER IS ADMIN
   const isAdmin = session?.user?.email === 'elen@nemintsco.com';
 
   // ============ FETCH AVAILABLE DATES ============
@@ -34,15 +34,16 @@ export default function Dashboard({ session }) {
     }
   };
 
-  // ============ FETCH DRIVERS FOR DATE ============
+  // ============ FETCH DRIVERS FOR DATE (From the new VIEW) ============
   const fetchDrivers = async (date) => {
     if (!date) {
       setDrivers([]);
       return;
     }
     setLoading(true);
+    // Changed from 'drivers' to 'daily_driver_stats' to get the names!
     const { data, error } = await supabase
-      .from('drivers')
+      .from('daily_driver_stats')
       .select('*')
       .eq('order_date', date)
       .order('total_pay', { ascending: false });
@@ -452,7 +453,7 @@ export default function Dashboard({ session }) {
                     <li key={d.sap_id}>
                       <span className="rank">{i + 1}</span>
                       <span className="name">
-                        <strong>{d.sap_id}</strong>
+                        <strong>{d.full_name || d.sap_id}</strong>
                         <small>{d.team} · {d.orders_count} orders</small>
                       </span>
                       <span className="amount">{peso(d.total_pay)}</span>
@@ -472,7 +473,7 @@ export default function Dashboard({ session }) {
                   <li key={d.sap_id} className={Number(d.total_pay) === 0 ? 'zero' : ''}>
                     <span className="rank">{i + 1}</span>
                     <span className="name">
-                      <strong>{d.sap_id}</strong>
+                      <strong>{d.full_name || d.sap_id}</strong>
                       <small>{d.team} · {d.orders_count} orders</small>
                     </span>
                     <span className="amount">{peso(d.total_pay)}</span>
@@ -501,10 +502,10 @@ export default function Dashboard({ session }) {
               <table className="rv-table">
                 <thead>
                   <tr>
+                    <th>Driver Name</th>
                     <th>SAP ID</th>
                     <th>Team</th>
                     <th>Phone</th>
-                    <th>Vehicle</th>
                     <th>Orders</th>
                     <th>Total Pay</th>
                     <th>Distance</th>
@@ -514,10 +515,10 @@ export default function Dashboard({ session }) {
                 <tbody>
                   {drivers.map((d) => (
                     <tr key={`${d.sap_id}-${d.order_date}`} className={rowClass(d.status)}>
-                      <td><strong>{d.sap_id}</strong></td>
+                      <td><strong>{d.full_name || 'Unknown Driver'}</strong></td>
+                      <td>{d.sap_id}</td>
                       <td>{d.team}</td>
                       <td>{d.phone || '-'}</td>
-                      <td>{d.vehicle_plate || '-'}</td>
                       <td>{d.orders_count}</td>
                       <td>{peso(d.total_pay)}</td>
                       <td>{Number(d.distance).toFixed(1)} km</td>
