@@ -229,3 +229,63 @@
 @media (prefers-reduced-motion: reduce) {
   .rv-ring-seg, .rv-bar-fill, .rv-pill-btn { transition: none; }
 }
+/* ---------- Payroll Section Additions ---------- */
+.rv-payroll-section {
+  margin-top: var(--gap);
+}
+
+.rv-payroll-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.rv-payroll-controls .rv-select input[type="date"] {
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  outline: none;
+  cursor: pointer;
+}
+
+.text-green {
+  color: #16a34a; /* Green for positive payroll */
+}
+
+.text-muted {
+  color: var(--muted); /* Gray for 0 payroll */
+}
+
+/* Ensure table headers look good in the new section */
+.rv-payroll-section .rv-table th {
+  background-color: rgba(255, 255, 255, 0.4);
+  border-radius: 8px 8px 0 0;
+}
+
+/* Add hover effect for payroll rows */
+.rv-payroll-section .rv-table tbody tr:hover td {
+  background: #fff;
+}
+/* Fix styles for the new Payroll Date Dropdowns */
+.rv-payroll-controls .rv-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--blue-900);
+  cursor: pointer;
+  outline: none;
+  padding-right: 20px;
+}
+
+.rv-payroll-controls .rv-select {
+  padding: 8px 16px;
+  background: rgba(255,255,255,0.9);
+  border: 1px solid var(--blue-300);
+}
