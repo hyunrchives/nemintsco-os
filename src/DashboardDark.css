@@ -1,0 +1,160 @@
+/* DashboardDark.css — import LAST (after DashboardTabs.css). Dark "portfolio" theme. */
+
+.rv-page {
+  --ink: #f3f3f6;
+  --muted: #8d8d98;
+  --glass: #1c1c20;
+  --glass-line: rgba(255,255,255,.07);
+  --blue-900: #1fbf9f;   /* accent (teal) */
+  --blue-700: #1fbf9f;
+  --blue-500: #3b82f6;
+  --blue-300: #6ea8ff;
+  --blue-100: rgba(255,255,255,.08);
+  --red: #e5634b;
+  --shadow: 0 14px 30px rgba(0,0,0,.45);
+  --panel: #1c1c20;
+  --panel-2: #26262b;
+  background: #3a3a40;
+  font-family: 'Poppins', 'Outfit', 'Inter', system-ui, sans-serif;
+}
+
+/* ---------- Frame + sidebar ---------- */
+.rv-frame {
+  flex-direction: row; align-items: stretch; gap: 0; padding: 0;
+  background: #0b0b0d; border-radius: clamp(24px, 3vw, 40px);
+  box-shadow: 0 30px 70px rgba(0,0,0,.5); overflow: hidden;
+}
+.rv-side {
+  display: flex; flex-direction: column; justify-content: space-between; align-items: center;
+  width: 84px; flex-shrink: 0; padding: 28px 0;
+}
+.rv-side nav { display: flex; flex-direction: column; gap: 22px; align-items: center; }
+.rv-side-btn {
+  display: grid; place-items: center; width: 54px; height: 54px; border-radius: 50%;
+  border: none; background: transparent; color: #e9e9ee; cursor: pointer; transition: background .15s, box-shadow .15s;
+}
+.rv-side-btn:hover { background: #17171a; }
+.rv-side-btn.active { background: #1a1a1e; box-shadow: 6px 6px 14px rgba(0,0,0,.6), -3px -3px 10px rgba(255,255,255,.03); }
+.rv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--gap); padding: 26px clamp(14px, 2.4vw, 32px) 32px 0; }
+
+/* ---------- Top bar ---------- */
+.rv-top { justify-content: space-between; }
+.rv-logo { background: none; border: none; padding: 0; font-size: clamp(22px, 3vw, 30px); font-weight: 600; }
+.rv-nav { display: none; }
+.rv-user { background: transparent; border: none; }
+.rv-user-dot { background: linear-gradient(135deg, #f4c27a, #e2755c); }
+.rv-admin { background: rgba(31,191,159,.15); color: #1fbf9f; }
+
+/* ---------- Buttons / inputs ---------- */
+.rv-pill-btn, .rv-icon-btn, .rv-select, .rv-filter-btn {
+  background: var(--panel); border: 1px solid var(--glass-line); color: var(--ink);
+}
+.rv-pill-btn:hover, .rv-icon-btn:hover, .rv-filter-btn:hover { background: var(--panel-2); border-color: var(--glass-line); }
+.rv-pill-btn.primary { background: #1fbf9f; border-color: #1fbf9f; color: #04120e; }
+.rv-pill-btn.primary:hover { background: #2ad4b2; }
+.rv-select { color: #1fbf9f; }
+.rv-select select, .rv-payroll-controls .rv-select select { color: var(--ink); }
+.rv-select select option { background: #1c1c20; color: #fff; }
+.rv-payroll-controls .rv-select { background: var(--panel); border-color: var(--glass-line); }
+.rv-icon-btn { color: var(--ink); }
+.rv-icon-btn.danger { color: var(--red); }
+.rv-search, .rv-field input {
+  background: #151518; border: 1px solid var(--glass-line); color: var(--ink);
+}
+.rv-search:focus, .rv-field input:focus { background: #151518; border-color: #1fbf9f; box-shadow: 0 0 0 3px rgba(31,191,159,.15); }
+.rv-field input:disabled { background: #111113; }
+.rv-filter { background: #151518; }
+.rv-filter button:hover:not(.active) { background: var(--panel-2); color: #fff; }
+.rv-filter button.active, .rv-nav-pill.active { background: #1fbf9f; color: #04120e; }
+.rv-edit-btn { background: rgba(255,255,255,.08); color: #cfd2da; }
+.rv-edit-btn:hover { background: #1fbf9f; color: #04120e; }
+
+/* ---------- Welcome ---------- */
+.rv-pill-bar.p1 { background: #1fbf9f; color: #04120e; }
+.rv-pill-bar.p2 { background: #f0a93a; color: #1a1204; }
+.rv-pill-bar.p3 { background: #3b82f6; color: #fff; }
+.rv-pill-bar.p4 { color: var(--red); border-color: rgba(229,99,75,.5); }
+.rv-welcome h1 { font-weight: 600; }
+
+/* ---------- Cards: big dark panel + glowing gradient tiles ---------- */
+.rv-card {
+  background: var(--panel); border: 1px solid var(--glass-line); border-radius: 30px;
+  backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: var(--shadow);
+}
+.rv-earnings, .rv-team, .rv-status {
+  background: radial-gradient(90% 70% at 100% 0%, var(--glow) 0%, transparent 65%), #141416;
+  border: 1.5px solid transparent;
+  border-image: none;
+  box-shadow: inset 0 0 0 1px var(--edge), var(--shadow);
+}
+.rv-earnings { --glow: rgba(31,191,159,.45); --edge: rgba(31,191,159,.7); color: #fff; }
+.rv-team     { --glow: rgba(240,169,58,.40); --edge: rgba(240,169,58,.7); }
+.rv-status   { --glow: rgba(229,99,75,.40);  --edge: rgba(229,99,75,.7); }
+.rv-avg { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.2); }
+
+.rv-ring-bg { stroke: rgba(255,255,255,.08); }
+.rv-ring-seg.a { stroke: #1fbf9f; }
+.rv-ring-seg.b { stroke: #f0a93a; }
+.rv-ring-seg.c { stroke: #6b7280; }
+.rv-legend i.a { background: #1fbf9f; }
+.rv-legend i.b { background: #f0a93a; }
+.rv-legend i.c { background: #6b7280; }
+
+.rv-bar-val { color: #fff; }
+.rv-bar-track { background: rgba(255,255,255,.08); }
+.rv-bar-fill.hp { background: #1fbf9f; }
+.rv-bar-fill.mp { background: #f0a93a; }
+.rv-bar-fill.lp { background: #3b82f6; }
+.rv-bar-fill.zombie { background: #e5634b; }
+
+/* Top earners → "Client Messages" style list */
+.rv-top-earners { background: #0b0b0d; border-color: transparent; box-shadow: none; padding-inline: 4px; }
+.rv-top-earners .rv-card-head { padding: 0 18px; }
+.rv-top-earners ol { gap: 0; }
+.rv-top-earners li { padding: 16px 18px; border-top: 1px solid rgba(255,255,255,.07); border-radius: 0; }
+.rv-top-earners li:first-child {
+  border: 1px solid rgba(31,191,159,.6); border-radius: 28px; margin: 6px -14px 6px 0;
+  background: radial-gradient(120% 140% at 0% 0%, rgba(31,191,159,.55), #101113 70%);
+  box-shadow: 0 10px 24px rgba(0,0,0,.5);
+}
+.rv-top-earners .rank { background: linear-gradient(135deg, #f4c27a, #e2755c); color: #1a0f08; }
+.rv-top-earners .amount { color: #1fbf9f; }
+.rv-low .rank { background: rgba(255,255,255,.08); color: #d0d3da; }
+.rv-low li.zero .rank { background: rgba(229,99,75,.18); }
+
+/* ---------- Tables / chips ---------- */
+.rv-table td { background: #151518; }
+.rv-table tbody tr:hover td { background: #202025; }
+.rv-table tr.row-zombie td { background: rgba(229,99,75,.12); }
+.rv-table tr.row-hp td { background: rgba(31,191,159,.10); }
+.rv-badge.hp { background: #1fbf9f; color: #04120e; }
+.rv-badge.mp { background: #f0a93a; color: #1a1204; }
+.rv-badge.lp { background: rgba(59,130,246,.2); color: #8db8ff; }
+.rv-badge.zombie { background: rgba(229,99,75,.18); color: #ff8d78; }
+.rv-chip { background: #151518; }
+.rv-chip.hl { background: radial-gradient(100% 120% at 100% 0%, rgba(31,191,159,.5), #101113 70%); border-color: rgba(31,191,159,.6); color: #fff; }
+.rv-dir-item { background: #151518; }
+.rv-dir-item.editing { border-color: #1fbf9f; box-shadow: 0 0 0 3px rgba(31,191,159,.15); }
+.rv-dir-avatar { background: linear-gradient(135deg, #f4c27a, #e2755c); color: #1a0f08; }
+.rv-danger-zone { background: rgba(229,99,75,.06); border-color: rgba(229,99,75,.4); }
+.text-green { color: #1fbf9f; }
+.rv-period-badge.draft { background: rgba(255,255,255,.1); color: #cfd2da; }
+.rv-period-badge.approved { background: rgba(240,169,58,.2); color: #f0c060; }
+.rv-period-badge.paid { background: rgba(31,191,159,.2); color: #4fe0c0; }
+
+/* Payslip modal stays light so it prints cleanly */
+.rv-modal { color: #12203a; --ink: #12203a; --muted: #6f7f9b; --blue-900: #12408a; }
+.rv-modal .rv-table td { background: #f4f6fa; }
+.rv-modal .rv-table tbody tr:hover td { background: #eef1f7; }
+.rv-modal .rv-edit-btn { background: #dbe8fb; color: #1b56b8; }
+.rv-modal .rv-pill-btn.primary { background: #12408a; border-color: #12408a; color: #fff; }
+
+/* ---------- Responsive: sidebar becomes a top row ---------- */
+@media (max-width: 700px) {
+  .rv-frame { flex-direction: column; }
+  .rv-side { flex-direction: row; width: 100%; padding: 14px 16px 0; }
+  .rv-side nav { flex-direction: row; gap: 8px; }
+  .rv-side-btn { width: 46px; height: 46px; }
+  .rv-main { padding: 14px; }
+  .rv-top-right { width: auto; }
+}
