@@ -1,0 +1,131 @@
+/* DashboardTabs.css — loads AFTER Dashboard.css and overrides/extends it.
+   Tabs, aligned forms, filters, number columns, driver directory. */
+
+/* ---------- Tabs (nav pills are now buttons) ---------- */
+.rv-nav { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.rv-nav::-webkit-scrollbar { display: none; }
+.rv-nav-pill {
+  border: none; background: transparent; font: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer; white-space: nowrap; transition: background .15s, color .15s;
+}
+.rv-nav-pill:hover:not(.active) { background: rgba(255,255,255,.8); color: var(--ink); }
+.rv-nav-pill.active { background: var(--blue-900); color: #fff; }
+
+/* ---------- Panel header (title left, tools right) ---------- */
+.rv-panel-head {
+  display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap;
+  gap: 14px; margin-bottom: 16px;
+}
+.rv-panel-head > div:first-child { min-width: 0; }
+.rv-panel-head .rv-sub { margin: 4px 0 0; }
+.rv-panel-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+
+.rv-search {
+  height: 42px; min-width: 220px; padding: 0 16px; border-radius: 999px; outline: none;
+  border: 1px solid var(--glass-line); background: rgba(255,255,255,.8);
+  font: inherit; font-size: 14px; color: var(--ink);
+}
+.rv-search:focus { border-color: var(--blue-500); background: #fff; }
+
+.rv-filter { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: rgba(255,255,255,.6); }
+.rv-filter button {
+  border: none; background: transparent; padding: 7px 14px; border-radius: 999px;
+  font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
+}
+.rv-filter button.active { background: var(--blue-900); color: #fff; }
+.rv-filter button:hover:not(.active) { background: #fff; color: var(--ink); }
+
+/* ---------- Tables: aligned numbers + driver cell ---------- */
+.rv-table th.num, .rv-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.rv-table td.rv-empty { text-align: center; }
+.rv-driver-cell { display: flex; align-items: center; gap: 8px; }
+.rv-driver-cell strong { font-weight: 500; }
+
+.rv-edit-btn {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0;
+  border: none; border-radius: 50%; background: var(--blue-100); color: var(--blue-700); cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.rv-edit-btn:hover { background: var(--blue-700); color: #fff; }
+.rv-edit-btn.danger { background: rgba(229,83,75,.12); color: var(--red); }
+.rv-edit-btn.danger:hover { background: var(--red); color: #fff; }
+
+.text-green { color: #16a34a; }
+
+/* ---------- Payroll ---------- */
+.rv-payroll-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.rv-payroll-controls .rv-select { padding: 0 16px; background: rgba(255,255,255,.85); border: 1px solid var(--blue-300); }
+.rv-payroll-controls .rv-select select { font-weight: 600; color: var(--blue-900); appearance: none; -webkit-appearance: none; padding-right: 4px; }
+
+.rv-chips { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.rv-chip { display: flex; flex-direction: column; gap: 4px; padding: 12px 16px; border-radius: 18px; background: rgba(255,255,255,.7); border: 1px solid var(--glass-line); }
+.rv-chip span { font-size: 12px; color: var(--muted); }
+.rv-chip strong { font-size: 22px; font-weight: 400; }
+.rv-chip.hl { background: var(--blue-900); border-color: var(--blue-900); color: #fff; }
+.rv-chip.hl span { color: rgba(255,255,255,.7); }
+
+/* ---------- Driver form (aligned grid) ---------- */
+.rv-form {
+  display: grid; gap: 14px; align-items: end;
+  grid-template-columns: 140px minmax(200px, 2fr) minmax(150px, 1fr) minmax(130px, 1fr) auto;
+}
+.rv-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rv-field > span { font-size: 12px; font-weight: 500; color: var(--muted); padding-left: 4px; }
+.rv-field input {
+  width: 100%; height: 44px; padding: 0 16px; border-radius: 14px; outline: none;
+  border: 1px solid var(--glass-line); background: rgba(255,255,255,.85);
+  font: inherit; font-size: 14px; color: var(--ink);
+}
+.rv-field input:focus { border-color: var(--blue-500); background: #fff; box-shadow: 0 0 0 4px rgba(47,125,240,.12); }
+.rv-field input:disabled { background: rgba(255,255,255,.4); color: var(--muted); cursor: not-allowed; }
+.rv-form-submit { height: 44px; }
+.rv-link-danger { background: none; border: none; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; color: var(--red); }
+
+/* ---------- Registered drivers directory ---------- */
+.rv-dir-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.rv-dir-item {
+  display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 12px;
+  border-radius: 18px; background: rgba(255,255,255,.7); border: 1px solid var(--glass-line);
+}
+.rv-dir-item.editing { border-color: var(--blue-500); box-shadow: 0 0 0 3px rgba(47,125,240,.15); }
+.rv-dir-avatar {
+  display: grid; place-items: center; flex-shrink: 0; width: 38px; height: 38px; border-radius: 50%;
+  background: var(--blue-100); color: var(--blue-700); font-weight: 600;
+}
+.rv-dir-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.rv-dir-info strong { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-dir-info small { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-dir-actions { display: flex; gap: 6px; }
+
+/* ---------- Spacing between stacked sections ---------- */
+.rv-frame > .rv-card, .rv-frame > .rv-grid { margin: 0; }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1000px) {
+  .rv-form { grid-template-columns: 1fr 1fr; }
+  .rv-field.wide { grid-column: 1 / -1; }
+  .rv-form-submit { grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
+  /* tabs move to their own scrollable row instead of being hidden */
+  .rv-nav { display: flex; order: 3; width: 100%; margin: 0; }
+  .rv-top-right { order: 2; }
+  .rv-panel-tools { width: 100%; }
+  .rv-search { flex: 1 1 100%; min-width: 0; }
+  .rv-filter { width: 100%; overflow-x: auto; }
+  .rv-filter button { flex: 1 1 0; }
+  .rv-form { grid-template-columns: 1fr; }
+  .rv-payroll-controls .rv-select { flex: 1 1 100%; }
+  .rv-payroll-controls .rv-select select { flex: 1; min-width: 0; }
+}
+
+/* ---------- Danger zone ---------- */
+.rv-danger-zone { border-color: rgba(229,83,75,.35); background: rgba(255,245,244,.7); }
+.rv-danger-zone h3 { color: var(--red); }
+.rv-check { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; font-size: 14px; cursor: pointer; }
+.rv-check input { width: 18px; height: 18px; accent-color: var(--red); }
+.rv-danger-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.rv-danger-row .rv-field { flex: 1 1 240px; max-width: 360px; }
+.rv-danger-btn { height: 44px; background: var(--red); border-color: var(--red); color: #fff; }
+.rv-danger-btn:hover:not(:disabled) { background: #c93f38; }
+.rv-danger-btn:disabled { opacity: .45; cursor: not-allowed; }
