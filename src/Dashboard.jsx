@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { supabase } from './supabaseClient';
 import Papa from 'papaparse';
-import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, Download, Wallet, UserPlus, Edit } from 'lucide-react';
+import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, Download, Wallet, UserPlus, Edit, Printer, CheckCircle, Lock, Unlock, Clock, X } from 'lucide-react';
 import './Dashboard.css';
 import './DashboardTabs.css';
 
@@ -38,16 +38,23 @@ export default function Dashboard({ session }) {
   const [statusFilter, setStatusFilter] = useState('All');
   const [dirSearch, setDirSearch] = useState('');
 
-  // Driver Form State (Used for both Add and Edit)
-  const [newDriver, setNewDriver] = useState({ sap_id: '', full_name: '', phone: '', vehicle_plate: '' });
+  // Driver Form State
+  const [newDriver, setNewDriver] = useState({ 
+    sap_id: '', full_name: '', phone: '', vehicle_plate: '', 
+    cash_advance: 0, coop_share: 0, other_deductions: 0 
+  });
   const [editingSapId, setEditingSapId] = useState(null);
   const [addingDriver, setAddingDriver] = useState(false);
 
-  // Danger zone (delete everything)
+  // Danger zone
   const [deletingAll, setDeletingAll] = useState(false);
   const [wipeDirectory, setWipeDirectory] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const CONFIRM_PHRASE = 'DELETE ALL';
+
+  // Payroll Period & Payslip States
+  const [periodStatus, setPeriodStatus] = useState('Draft');
+  const [payslipDriver, setPayslipDriver] = useState(null); 
 
   const isAdmin = session?.user?.email === 'elen@nemintsco.com';
 
@@ -58,8 +65,6 @@ export default function Dashboard({ session }) {
   ];
   const activeTab = TABS.some((t) => t.id === tab) ? tab : 'overview';
 
-  // Match uploaded records to the driver directory by SAP ID, so registered
-  // drivers automatically replace "Unknown Driver" (updates instantly on save).
   const dirMap = useMemo(
     () => new Map(directory.map((d) => [String(d.sap_id).trim(), d])),
     [directory]
@@ -73,10 +78,13 @@ export default function Dashboard({ session }) {
         full_name: e.full_name || r.full_name,
         phone: e.phone || r.phone,
         vehicle_plate: e.vehicle_plate || r.vehicle_plate,
+        cash_advance: e.cash_advance || 0,
+        coop_share: e.coop_share || 0,
+        other_deductions: e.other_deductions || 0,
       };
     });
-  const drivers = useMemo(() => withDirectory(rawDrivers), [rawDrivers, dirMap]); // eslint-disable-line react-hooks/exhaustive-deps
-  const payrollDrivers = useMemo(() => withDirectory(rawPayrollDrivers), [rawPayrollDrivers, dirMap]); // eslint-disable-line react-hooks/exhaustive-deps
+  const drivers = useMemo(() => withDirectory(rawDrivers), [rawDrivers, dirMap]); 
+  const payrollDrivers = useMemo(() => withDirectory(rawPayrollDrivers), [rawPayrollDrivers, dirMap]); 
 
   // ============ FETCH DATA ============
   const fetchDirectory = async () => {
@@ -131,6 +139,37 @@ export default function Dashboard({ session }) {
   useEffect(() => { if (selectedDate) fetchDrivers(selectedDate); }, [selectedDate]);
   useEffect(() => { if (isAdmin && startDate && endDate) fetchPayrollDrivers(startDate, endDate); }, [startDate, endDate, isAdmin]);
 
+  // ============ PAY PERIOD PRESETS ============
+  const setPeriodPreset = (type) => {
+    if (periodStatus === 'Paid') return alert('🔒 This period is locked because it is marked as PAID.');
+    if (availableDates.length === 0) return;
+
+    const latestDateStr = availableDates[0];
+    const latestDate = new Date(latestDateStr + 'T00:00:00');
+    
+    if (type === '1st-15th') {
+      const y = latestDate.getFullYear();
+      const m = String(latestDate.getMonth() + 1).padStart(2, '0');
+      setStartDate(`${y}-${m}-01`);
+      setEndDate(`${y}-${m}-15`);
+    } else if (type === '16th-End') {
+      const y = latestDate.getFullYear();
+      const m = latestDate.getMonth();
+      const lastDay = new Date(y, m + 1, 0).getDate();
+      const mStr = String(m + 1).padStart(2, '0');
+      setStartDate(`${y}-${mStr}-16`);
+      setEndDate(`${y}-${mStr}-${lastDay}`);
+    } else if (type === 'Last 7 Days') {
+      const pastDate = new Date(latestDate);
+      pastDate.setDate(pastDate.getDate() - 6);
+      const pY = pastDate.getFullYear();
+      const pM = String(pastDate.getMonth() + 1).padStart(2, '0');
+      const pD = String(pastDate.getDate()).padStart(2, '0');
+      setStartDate(`${pY}-${pM}-${pD}`);
+      setEndDate(latestDateStr);
+    }
+  };
+
   // ============ ADD / EDIT DRIVER ============
   const handleSaveDriver = async (e) => {
     e.preventDefault();
@@ -140,43 +179,30 @@ export default function Dashboard({ session }) {
     const fullName = newDriver.full_name.trim();
     const phone = newDriver.phone.trim();
     const plate = newDriver.vehicle_plate.trim();
+    const ca = Number(newDriver.cash_advance) || 0;
+    const cs = Number(newDriver.coop_share) || 0;
+    const od = Number(newDriver.other_deductions) || 0;
 
+    // ONLY save to driver_directory. We completely ignore updating daily_driver_stats.
     const res = await supabase
       .from('driver_directory')
-      .upsert([{
-        sap_id: sapId,
-        full_name: fullName,
-        phone,
+      .upsert([{ 
+        sap_id: sapId, 
+        full_name: fullName, 
+        phone, 
         vehicle_plate: plate,
+        cash_advance: ca,
+        coop_share: cs,
+        other_deductions: od
       }], { onConflict: 'sap_id' });
 
-    const error = res.error;
-
-    if (error) {
-      alert('Error saving driver: ' + error.message);
+    if (res.error) {
+      alert('Error saving driver: ' + res.error.message);
     } else {
-      // Sync phone/plate into already-uploaded records (only fields that were filled in)
-      const targetId = editingSapId || sapId;
-      const patch = {};
-      if (phone) patch.phone = phone;
-      if (plate) patch.vehicle_plate = plate;
-      if (Object.keys(patch).length) {
-        await supabase.from('drivers').update(patch).eq('sap_id', targetId);
-      }
-
-      // How many uploaded records now carry this driver's real name?
-      const { count } = await supabase
-        .from('drivers')
-        .select('sap_id', { count: 'exact', head: true })
-        .eq('sap_id', targetId);
-
-      alert(
-        (editingSapId ? '✅ Driver updated!' : '✅ Driver added!') +
-        (count ? `\nLinked to ${count} uploaded record(s) — names are updated.` : '\nNo uploaded records with this SAP ID yet.')
-      );
-
-      setNewDriver({ sap_id: '', full_name: '', phone: '', vehicle_plate: '' });
+      alert(editingSapId ? '✅ Driver updated!' : '✅ Driver added!');
+      setNewDriver({ sap_id: '', full_name: '', phone: '', vehicle_plate: '', cash_advance: 0, coop_share: 0, other_deductions: 0 });
       setEditingSapId(null);
+      
       await fetchDirectory();
 
       if (selectedDate) fetchDrivers(selectedDate);
@@ -187,54 +213,47 @@ export default function Dashboard({ session }) {
 
   const handleEditClick = (sapId, existingName = '', existingPlate = '') => {
     const dirEntry = directory.find((d) => d.sap_id === sapId);
-
     setNewDriver({
       sap_id: sapId,
       full_name: dirEntry ? dirEntry.full_name : (existingName === 'Unknown Driver' ? '' : existingName),
       phone: dirEntry ? (dirEntry.phone || '') : '',
       vehicle_plate: dirEntry ? (dirEntry.vehicle_plate || '') : existingPlate,
+      cash_advance: dirEntry ? (dirEntry.cash_advance || 0) : 0,
+      coop_share: dirEntry ? (dirEntry.coop_share || 0) : 0,
+      other_deductions: dirEntry ? (dirEntry.other_deductions || 0) : 0,
     });
     setEditingSapId(sapId);
-    setTab('drivers'); // jump to the Drivers tab where the form lives
+    setTab('drivers');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleCancelEdit = () => {
-    setNewDriver({ sap_id: '', full_name: '', phone: '', vehicle_plate: '' });
+    setNewDriver({ sap_id: '', full_name: '', phone: '', vehicle_plate: '', cash_advance: 0, coop_share: 0, other_deductions: 0 });
     setEditingSapId(null);
   };
 
   const handleDeleteDriver = async (sapId, name) => {
-    if (!window.confirm(`Are you sure you want to delete ${name} (SAP ID: ${sapId}) from the directory?`)) return;
+    if (!window.confirm(`Delete ${name} (SAP ID: ${sapId}) from the directory?`)) return;
     const { error } = await supabase.from('driver_directory').delete().eq('sap_id', sapId);
     if (error) alert('Error deleting driver: ' + error.message);
     else await fetchDirectory();
   };
 
-  // ============ DELETE ALL DATA (admin) ============
+  // ============ DELETE ALL DATA ============
   const handleDeleteAll = async () => {
     if (!isAdmin) return alert('Access Denied.');
     if (confirmText.trim().toUpperCase() !== CONFIRM_PHRASE) return;
-    if (!window.confirm(
-      `⚠️ This permanently deletes ALL uploaded records for ALL dates` +
-      `${wipeDirectory ? ' AND the entire driver directory' : ''}.\n\nThis cannot be undone. Continue?`
-    )) return;
+    if (!window.confirm(`⚠️ Permanently delete ALL uploaded records?`)) return;
 
     setDeletingAll(true);
-
     const { error } = await supabase.from('drivers').delete().not('sap_id', 'is', null);
     if (error) {
-      alert('Failed to delete records: ' + error.message);
+      alert('Failed to delete: ' + error.message);
       setDeletingAll(false);
       return;
     }
+    if (wipeDirectory) await supabase.from('driver_directory').delete().not('sap_id', 'is', null);
 
-    if (wipeDirectory) {
-      const res = await supabase.from('driver_directory').delete().not('sap_id', 'is', null);
-      if (res.error) alert('Records deleted, but the directory failed: ' + res.error.message);
-    }
-
-    // reset everything on screen
     setDrivers([]);
     setPayrollDrivers([]);
     setAvailableDates([]);
@@ -267,20 +286,24 @@ export default function Dashboard({ session }) {
     return 'HP';
   };
 
-  // ============ CSV UPLOAD (ADMIN ONLY) ============
+  // ============ CSV UPLOAD ============
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     if (!file) return;
-
-    // Layer 1: runtime guard — blocks any non-admin trigger of this handler
     if (!isAdmin) {
       alert('Access Denied. Only admins can upload CSV files.');
-      event.target.value = ''; // clear the input so the file ref doesn't stick
+      event.target.value = '';
       return;
     }
 
-    setUploading(true);
+    if (periodStatus === 'Paid') {
+      if (!window.confirm("⚠️ WARNING: You are uploading data for a period marked as PAID. This will alter payroll history. Continue?")) {
+        event.target.value = '';
+        return;
+      }
+    }
 
+    setUploading(true);
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
@@ -308,10 +331,8 @@ export default function Dashboard({ session }) {
           const key = `${orderDate}__${sapId}`;
 
           const driverInfo = directory.find((d) => d.sap_id === sapId) || {};
-
           let phoneStr = driverInfo.phone || cleanRow['Driver Phone Number'] || '';
           if (phoneStr.includes('E+') || phoneStr.includes('e+')) phoneStr = 'Invalid (Excel E+11)';
-
           let plateStr = driverInfo.vehicle_plate || cleanRow['Driver Vehicle Plate'] || '';
 
           const payStr = cleanRow['Total Pay Display'] || cleanRow['Total Pay'] || 0;
@@ -321,23 +342,17 @@ export default function Dashboard({ session }) {
 
           if (!grouped[key]) {
             grouped[key] = {
-              sap_id: sapId,
-              order_date: orderDate,
-              phone: phoneStr,
-              vehicle_plate: plateStr,
+              sap_id: sapId, order_date: orderDate, phone: phoneStr, vehicle_plate: plateStr,
               distance: 0, total_pay: 0, orders_count: 0,
             };
           }
-
           grouped[key].distance += dist;
           grouped[key].total_pay += pay;
           grouped[key].orders_count += 1;
         });
 
         const records = Object.values(grouped).map((d) => ({
-          ...d,
-          team: getTeam(d.sap_id),
-          status: calculateStatus(d.total_pay, d.orders_count),
+          ...d, team: getTeam(d.sap_id), status: calculateStatus(d.total_pay, d.orders_count),
           last_updated: new Date().toISOString(),
         }));
 
@@ -348,10 +363,8 @@ export default function Dashboard({ session }) {
         }
 
         const { error } = await supabase.from('drivers').upsert(records, { onConflict: 'sap_id,order_date' });
-
-        if (error) {
-          alert('Upload failed: ' + error.message);
-        } else {
+        if (error) alert('Upload failed: ' + error.message);
+        else {
           const dates = [...new Set(records.map((r) => r.order_date))].sort();
           alert(`✅ Uploaded ${records.length} records.`);
           setSelectedDate(dates[dates.length - 1]);
@@ -367,6 +380,7 @@ export default function Dashboard({ session }) {
   const clearCurrentDate = async () => {
     if (!isAdmin) return alert('Access Denied.');
     if (!selectedDate) return;
+    if (periodStatus === 'Paid') return alert('🔒 Cannot delete data from a PAID period.');
     if (!window.confirm(`⚠️ DELETE ALL records for ${selectedDate}?`)) return;
     await supabase.from('drivers').delete().eq('order_date', selectedDate);
     await fetchAvailableDates();
@@ -385,7 +399,7 @@ export default function Dashboard({ session }) {
     }
   };
 
-  // ============ STATS COMPUTATION ============
+  // ============ STATS ============
   const stats = useMemo(() => {
     if (!drivers.length) return null;
     const totalDrivers = drivers.length;
@@ -413,21 +427,18 @@ export default function Dashboard({ session }) {
     };
   }, [drivers]);
 
-  // ============ PAYROLL COMPUTATION ============
+  // ============ PAYROLL ============
   const payrollData = useMemo(() => {
     if (!payrollDrivers.length) return [];
     const grouped = {};
     payrollDrivers.forEach((d) => {
       if (!grouped[d.sap_id]) {
         grouped[d.sap_id] = {
-          sap_id: d.sap_id,
-          full_name: d.full_name || 'Unknown Driver',
-          team: d.team,
-          plate_number: d.vehicle_plate || '-',
-          total_km: 0,
-          total_earnings: 0,
-          total_orders: 0,
-          days_worked: new Set(),
+          sap_id: d.sap_id, full_name: d.full_name || 'Unknown Driver', team: d.team,
+          plate_number: d.vehicle_plate || '-', total_km: 0, total_earnings: 0, total_orders: 0, days_worked: new Set(),
+          cash_advance: d.cash_advance || 0,
+          coop_share: d.coop_share || 0,
+          other_deductions: d.other_deductions || 0,
         };
       }
       grouped[d.sap_id].total_km += Number(d.distance || 0);
@@ -436,18 +447,69 @@ export default function Dashboard({ session }) {
       if (d.vehicle_plate) grouped[d.sap_id].plate_number = d.vehicle_plate;
       if (d.order_date) grouped[d.sap_id].days_worked.add(d.order_date);
     });
-    return Object.values(grouped).map((d) => ({ ...d, days_worked: d.days_worked.size })).sort((a, b) => b.total_km - a.total_km);
+    
+    return Object.values(grouped).map((d) => {
+      const totalDeductions = Number(d.cash_advance) + Number(d.coop_share) + Number(d.other_deductions);
+      return { 
+        ...d, 
+        days_worked: d.days_worked.size,
+        total_deductions: totalDeductions,
+        net_pay: Number(d.total_earnings) - totalDeductions
+      };
+    }).sort((a, b) => b.total_km - a.total_km);
   }, [payrollDrivers]);
 
   const payrollTotals = useMemo(() => ({
     drivers: payrollData.length,
     km: payrollData.reduce((s, d) => s + d.total_km, 0),
     earnings: payrollData.reduce((s, d) => s + d.total_earnings, 0),
+    net: payrollData.reduce((s, d) => s + d.net_pay, 0),
   }), [payrollData]);
 
   const dateRangeString = startDate && endDate ? `${formatDate(startDate)} - ${formatDate(endDate)}` : 'Select Dates';
 
-  // ============ FILTERED LISTS ============
+  // ============ EXPORT ============
+  const handleExportCSV = () => {
+    if (!isAdmin) return;
+    if (payrollData.length === 0) return alert('No data to export.');
+
+    const csvData = payrollData.map((d) => ({
+      'Date Range': dateRangeString,
+      'SAP ID': d.sap_id,
+      'Driver Name': d.full_name,
+      'Team': d.team,
+      'Plate Number': d.plate_number,
+      'Days Worked': d.days_worked,
+      'Total KM': d.total_km.toFixed(1),
+      'Gross Earnings': d.total_earnings.toFixed(2),
+      'Cash Advance': d.cash_advance.toFixed(2),
+      'Coop Share': d.coop_share.toFixed(2),
+      'Other Deductions': d.other_deductions.toFixed(2),
+      'Total Deductions': d.total_deductions.toFixed(2),
+      'Net Pay': d.net_pay.toFixed(2),
+      'Status': periodStatus,
+    }));
+
+    const csv = Papa.unparse(csvData);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Payroll_${periodStatus}_${startDate}_to_${endDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // ============ OPEN PAYSLIP ============
+  const openPayslip = (driver) => {
+    const dailyRecords = payrollDrivers
+      .filter((d) => d.sap_id === driver.sap_id)
+      .sort((a, b) => new Date(a.order_date) - new Date(b.order_date));
+    setPayslipDriver({ ...driver, dailyRecords });
+  };
+
+  // ============ FILTERS ============
   const filteredDaily = useMemo(() => {
     const q = dailySearch.trim().toLowerCase();
     return drivers.filter((d) => {
@@ -471,33 +533,6 @@ export default function Dashboard({ session }) {
     );
   }, [directory, dirSearch]);
 
-  // ============ EXPORT TO CSV ============
-  const handleExportCSV = () => {
-    if (!isAdmin) return;
-    if (payrollData.length === 0) return alert('No data to export.');
-
-    const csvData = payrollData.map((d) => ({
-      'Date Range': dateRangeString,
-      'SAP ID': d.sap_id,
-      'Driver Name': d.full_name,
-      'Team': d.team,
-      'Plate Number': d.plate_number,
-      'Days Worked': d.days_worked,
-      'Total KM': d.total_km.toFixed(1),
-      'Total Earnings': d.total_earnings.toFixed(2),
-    }));
-
-    const csv = Papa.unparse(csvData);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `Payroll_${startDate}_to_${endDate}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   // ---------- view helpers ----------
   const rawName = (session?.user?.email || 'there').split('@')[0];
   const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
@@ -510,20 +545,11 @@ export default function Dashboard({ session }) {
   const unassignedLen = ringSeg(stats?.unassignedCount);
   const maxStatus = stats ? Math.max(1, ...Object.values(stats.statusCounts)) : 1;
 
-  // Upload / date toolbar (shown on Overview + Daily Breakdown)
   const toolbar = (
     <div className="rv-controls">
-      {/* Layer 2: UI hide — only admins see the upload control at all */}
       {isAdmin && (
         <>
-          <input
-            type="file"
-            accept=".csv"
-            onChange={handleFileUpload}
-            ref={fileInputRef}
-            style={{ display: 'none' }}
-            id="csv-upload"
-          />
+          <input type="file" accept=".csv" onChange={handleFileUpload} ref={fileInputRef} style={{ display: 'none' }} id="csv-upload" />
           <label htmlFor="csv-upload" className={`rv-pill-btn primary ${uploading ? 'disabled' : ''}`}>
             <Upload size={16} /> {uploading ? 'Uploading...' : 'Upload CSV'}
           </label>
@@ -543,22 +569,16 @@ export default function Dashboard({ session }) {
       </div>
 
       <div className="rv-controls-end">
-        <button onClick={() => fetchDrivers(selectedDate)} className="rv-icon-btn" title="Refresh" aria-label="Refresh"><RefreshCw size={17} /></button>
+        <button onClick={() => fetchDrivers(selectedDate)} className="rv-icon-btn" title="Refresh"><RefreshCw size={17} /></button>
         {isAdmin && (
-          <button onClick={clearCurrentDate} className="rv-icon-btn danger" title="Delete this day's records" aria-label="Delete this day's records"><Trash2 size={17} /></button>
+          <button onClick={clearCurrentDate} className="rv-icon-btn danger" title="Delete this day's records"><Trash2 size={17} /></button>
         )}
       </div>
     </div>
   );
 
   const editButton = (d, plate) => (
-    <button
-      type="button"
-      className="rv-edit-btn"
-      onClick={() => handleEditClick(d.sap_id, d.full_name, plate)}
-      title="Edit driver"
-      aria-label={`Edit ${d.full_name || d.sap_id}`}
-    >
+    <button type="button" className="rv-edit-btn" onClick={() => handleEditClick(d.sap_id, d.full_name, plate)} title="Edit driver">
       <Edit size={14} />
     </button>
   );
@@ -566,44 +586,33 @@ export default function Dashboard({ session }) {
   return (
     <div className="rv-page">
       <div className="rv-frame">
-        {/* ---------- Top bar + tabs ---------- */}
         <header className="rv-top">
           <div className="rv-logo">Nemintsco Depot</div>
-
-          <nav className="rv-nav" role="tablist" aria-label="Dashboard sections">
+          <nav className="rv-nav" role="tablist">
             {TABS.map((t) => (
-              <button
-                key={t.id}
-                role="tab"
-                aria-selected={activeTab === t.id}
-                className={`rv-nav-pill ${activeTab === t.id ? 'active' : ''}`}
-                onClick={() => setTab(t.id)}
-              >
+              <button key={t.id} role="tab" className={`rv-nav-pill ${activeTab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
                 {t.label}
               </button>
             ))}
           </nav>
-
           <div className="rv-top-right">
             <span className="rv-user" title={session.user.email}>
-              <span className="rv-user-dot" aria-hidden="true">{displayName.charAt(0)}</span>
+              <span className="rv-user-dot">{displayName.charAt(0)}</span>
               <span className="rv-user-email">{session.user.email}</span>
               {isAdmin && <span className="rv-admin">Admin</span>}
             </span>
-            <button onClick={handleLogout} className="rv-pill-btn">
-              <LogOut size={16} /> <span>Logout</span>
-            </button>
+            <button onClick={handleLogout} className="rv-pill-btn"><LogOut size={16} /> <span>Logout</span></button>
           </div>
         </header>
 
-        {/* =====================  OVERVIEW  ===================== */}
+        {/* ===================== OVERVIEW ===================== */}
         {activeTab === 'overview' && (
           <>
             <section className="rv-welcome">
               <div className="rv-welcome-left">
                 <h1>Welcome in, {displayName}</h1>
                 {stats && (
-                  <div className="rv-pills" aria-label="Driver status mix">
+                  <div className="rv-pills">
                     {[
                       ['HP', 'High performers', stats.statusCounts.HP, 'p1'],
                       ['MP', 'Mid performers', stats.statusCounts.MP, 'p2'],
@@ -612,9 +621,7 @@ export default function Dashboard({ session }) {
                     ].map(([key, label, count, cls]) => (
                       <div className="rv-pill-item" key={key}>
                         <span className="rv-pill-label">{label}</span>
-                        <span className={`rv-pill-bar ${cls}`} style={{ minWidth: 64 + pct(count) * 1.6 }}>
-                          {pct(count)}%
-                        </span>
+                        <span className={`rv-pill-bar ${cls}`} style={{ minWidth: 64 + pct(count) * 1.6 }}>{pct(count)}%</span>
                       </div>
                     ))}
                   </div>
@@ -633,9 +640,7 @@ export default function Dashboard({ session }) {
 
             {!stats ? (
               <section className="rv-card">
-                <p className="rv-empty">
-                  {loading ? 'Loading...' : selectedDate ? `No data for ${formatDate(selectedDate)}.` : 'No drivers yet. Upload a CSV to begin.'}
-                </p>
+                <p className="rv-empty">{loading ? 'Loading...' : selectedDate ? `No data for ${formatDate(selectedDate)}.` : 'No drivers yet. Upload a CSV to begin.'}</p>
               </section>
             ) : (
               <section className="rv-grid">
@@ -648,7 +653,7 @@ export default function Dashboard({ session }) {
                 <article className="rv-card rv-team">
                   <h3>Teams</h3>
                   <div className="rv-ring">
-                    <svg viewBox="0 0 160 160" role="img" aria-label="Drivers by team">
+                    <svg viewBox="0 0 160 160">
                       <circle cx="80" cy="80" r={RING_R} className="rv-ring-bg" />
                       <g transform="rotate(-90 80 80)">
                         <circle cx="80" cy="80" r={RING_R} className="rv-ring-seg a" strokeDasharray={`${aldrinLen} ${RING_C}`} strokeDashoffset="0" />
@@ -656,9 +661,7 @@ export default function Dashboard({ session }) {
                         <circle cx="80" cy="80" r={RING_R} className="rv-ring-seg c" strokeDasharray={`${unassignedLen} ${RING_C}`} strokeDashoffset={-(aldrinLen + arnilLen)} />
                       </g>
                     </svg>
-                    <div className="rv-ring-label">
-                      <strong>{stats.totalDrivers}</strong><span>drivers</span>
-                    </div>
+                    <div className="rv-ring-label"><strong>{stats.totalDrivers}</strong><span>drivers</span></div>
                   </div>
                   <ul className="rv-legend">
                     <li><i className="a" /> Aldrin (OS1) <b>{stats.aldrinCount}</b></li>
@@ -670,7 +673,7 @@ export default function Dashboard({ session }) {
                 <article className="rv-card rv-status">
                   <h3>Performance</h3>
                   <p className="rv-sub">{stats.statusCounts.HP} high · {stats.zombieCount} zombies</p>
-                  <div className="rv-bars" role="img" aria-label="Drivers by status">
+                  <div className="rv-bars">
                     {['HP', 'MP', 'LP', 'Zombie'].map((k) => (
                       <div className="rv-bar-col" key={k}>
                         <span className="rv-bar-val">{stats.statusCounts[k]}</span>
@@ -684,12 +687,8 @@ export default function Dashboard({ session }) {
                 </article>
 
                 <article className="rv-card rv-top-earners">
-                  <div className="rv-card-head">
-                    <h3><Trophy size={18} /> Top earners</h3><strong>{stats.topEarners.length}/5</strong>
-                  </div>
-                  {stats.topEarners.length === 0 ? (
-                    <p className="rv-sub light">No earnings yet.</p>
-                  ) : (
+                  <div className="rv-card-head"><h3><Trophy size={18} /> Top earners</h3><strong>{stats.topEarners.length}/5</strong></div>
+                  {stats.topEarners.length === 0 ? <p className="rv-sub light">No earnings yet.</p> : (
                     <ol>
                       {stats.topEarners.map((d, i) => (
                         <li key={d.sap_id}>
@@ -719,7 +718,7 @@ export default function Dashboard({ session }) {
           </>
         )}
 
-        {/* =====================  DAILY BREAKDOWN  ===================== */}
+        {/* ===================== DAILY BREAKDOWN ===================== */}
         {activeTab === 'daily' && (
           <>
             {toolbar}
@@ -727,62 +726,30 @@ export default function Dashboard({ session }) {
               <div className="rv-panel-head">
                 <div>
                   <h3>Daily Driver Breakdown</h3>
-                  <p className="rv-sub">
-                    {selectedDate ? formatDate(selectedDate) : 'No date selected'} · {filteredDaily.length} of {drivers.length} drivers
-                  </p>
+                  <p className="rv-sub">{selectedDate ? formatDate(selectedDate) : 'No date'} · {filteredDaily.length} of {drivers.length} drivers</p>
                 </div>
                 <div className="rv-panel-tools">
-                  <input
-                    type="search"
-                    className="rv-search"
-                    placeholder="Search name, SAP ID or plate…"
-                    value={dailySearch}
-                    onChange={(e) => setDailySearch(e.target.value)}
-                    aria-label="Search drivers"
-                  />
-                  <div className="rv-filter" role="group" aria-label="Filter by status">
+                  <input type="search" className="rv-search" placeholder="Search name, SAP ID or plate…" value={dailySearch} onChange={(e) => setDailySearch(e.target.value)} />
+                  <div className="rv-filter">
                     {STATUS_FILTERS.map((s) => (
-                      <button
-                        key={s}
-                        className={statusFilter === s ? 'active' : ''}
-                        onClick={() => setStatusFilter(s)}
-                        aria-pressed={statusFilter === s}
-                      >{s}</button>
+                      <button key={s} className={statusFilter === s ? 'active' : ''} onClick={() => setStatusFilter(s)}>{s}</button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              {loading ? (
-                <p className="rv-empty">Loading...</p>
-              ) : drivers.length === 0 ? (
-                <p className="rv-empty">{selectedDate ? `No data for ${selectedDate}.` : 'No drivers yet. Upload a CSV to begin.'}</p>
-              ) : filteredDaily.length === 0 ? (
-                <p className="rv-empty">No drivers match your filter.</p>
-              ) : (
+              {loading ? <p className="rv-empty">Loading...</p> : drivers.length === 0 ? <p className="rv-empty">No data for {selectedDate}.</p> : filteredDaily.length === 0 ? <p className="rv-empty">No drivers match filter.</p> : (
                 <div className="rv-table-scroll">
                   <table className="rv-table">
                     <thead>
-                      <tr>
-                        <th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Phone</th>
-                        <th className="num">Orders</th><th className="num">Total Pay</th><th className="num">Distance</th><th>Status</th>
-                      </tr>
+                      <tr><th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Phone</th><th className="num">Orders</th><th className="num">Total Pay</th><th className="num">Distance</th><th>Status</th></tr>
                     </thead>
                     <tbody>
                       {filteredDaily.map((d) => (
                         <tr key={`${d.sap_id}-${d.order_date}`} className={rowClass(d.status)}>
-                          <td>
-                            <div className="rv-driver-cell">
-                              <strong>{d.full_name || 'Unknown Driver'}</strong>
-                              {isAdmin && editButton(d, d.vehicle_plate)}
-                            </div>
-                          </td>
-                          <td>{d.sap_id}</td>
-                          <td>{d.team}</td>
-                          <td>{d.phone || '-'}</td>
-                          <td className="num">{d.orders_count}</td>
-                          <td className="num">{peso(d.total_pay)}</td>
-                          <td className="num">{Number(d.distance).toFixed(1)} km</td>
+                          <td><div className="rv-driver-cell"><strong>{d.full_name || 'Unknown Driver'}</strong>{isAdmin && editButton(d, d.vehicle_plate)}</div></td>
+                          <td>{d.sap_id}</td><td>{d.team}</td><td>{d.phone || '-'}</td>
+                          <td className="num">{d.orders_count}</td><td className="num">{peso(d.total_pay)}</td><td className="num">{Number(d.distance).toFixed(1)} km</td>
                           <td><span className={`rv-badge ${String(d.status).toLowerCase()}`}>{d.status}</span></td>
                         </tr>
                       ))}
@@ -794,36 +761,42 @@ export default function Dashboard({ session }) {
           </>
         )}
 
-        {/* =====================  PAYROLL (admin)  ===================== */}
+        {/* ===================== PAYROLL (admin) ===================== */}
         {activeTab === 'payroll' && isAdmin && (
           <section className="rv-card rv-payroll-section">
+            
             <div className="rv-panel-head">
               <div>
                 <h3><Wallet size={18} /> Payroll Export</h3>
-                <p className="rv-sub">{dateRangeString}</p>
+                <p className="rv-sub">{dateRangeString} <span className={`rv-period-badge ${periodStatus.toLowerCase()}`}>{periodStatus}</span></p>
               </div>
-              <button onClick={handleExportCSV} className="rv-pill-btn primary">
-                <Download size={16} /> Export CSV
-              </button>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                {periodStatus === 'Draft' && <button onClick={() => setPeriodStatus('Approved')} className="rv-pill-btn" style={{ background: '#eab308', color: 'white', borderColor: '#eab308' }}><CheckCircle size={16} /> Approve</button>}
+                {periodStatus === 'Approved' && <button onClick={() => setPeriodStatus('Paid')} className="rv-pill-btn" style={{ background: '#16a34a', color: 'white', borderColor: '#16a34a' }}><Lock size={16} /> Mark as Paid</button>}
+                {periodStatus === 'Paid' && <button onClick={() => setPeriodStatus('Draft')} className="rv-pill-btn" style={{ background: '#ef4444', color: 'white', borderColor: '#ef4444' }}><Unlock size={16} /> Unlock</button>}
+                <button onClick={handleExportCSV} className="rv-pill-btn primary"><Download size={16} /> Export</button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+              <button onClick={() => setPeriodPreset('1st-15th')} className="rv-filter-btn"><Clock size={14} /> 1st - 15th</button>
+              <button onClick={() => setPeriodPreset('16th-End')} className="rv-filter-btn"><Clock size={14} /> 16th - End</button>
+              <button onClick={() => setPeriodPreset('Last 7 Days')} className="rv-filter-btn"><Clock size={14} /> Last 7 Days</button>
             </div>
 
             <div className="rv-payroll-controls">
               <div className="rv-select">
                 <span className="rv-sub" style={{ margin: 0 }}>From</span>
-                <select value={startDate} onChange={(e) => setStartDate(e.target.value)} aria-label="Start date">
+                <select value={startDate} onChange={(e) => setStartDate(e.target.value)} disabled={periodStatus === 'Paid'}>
                   <option value="">Select start date</option>
-                  {availableDates.slice().reverse().map((d) => (
-                    <option key={`start-${d}`} value={d}>{formatDate(d)}</option>
-                  ))}
+                  {availableDates.slice().reverse().map((d) => <option key={`start-${d}`} value={d}>{formatDate(d)}</option>)}
                 </select>
               </div>
               <div className="rv-select">
                 <span className="rv-sub" style={{ margin: 0 }}>To</span>
-                <select value={endDate} onChange={(e) => setEndDate(e.target.value)} aria-label="End date">
+                <select value={endDate} onChange={(e) => setEndDate(e.target.value)} disabled={periodStatus === 'Paid'}>
                   <option value="">Select end date</option>
-                  {availableDates.map((d) => (
-                    <option key={`end-${d}`} value={d}>{formatDate(d)}</option>
-                  ))}
+                  {availableDates.map((d) => <option key={`end-${d}`} value={d}>{formatDate(d)}</option>)}
                 </select>
               </div>
             </div>
@@ -831,7 +804,8 @@ export default function Dashboard({ session }) {
             <div className="rv-chips">
               <div className="rv-chip"><span>Drivers</span><strong>{payrollTotals.drivers}</strong></div>
               <div className="rv-chip"><span>Total KM</span><strong>{payrollTotals.km.toFixed(1)}</strong></div>
-              <div className="rv-chip hl"><span>Total earnings</span><strong>{peso(payrollTotals.earnings)}</strong></div>
+              <div className="rv-chip hl"><span>Total Gross</span><strong>{peso(payrollTotals.earnings)}</strong></div>
+              <div className="rv-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>Total Net Pay</span><strong>{peso(payrollTotals.net)}</strong></div>
             </div>
 
             <div className="rv-table-scroll">
@@ -839,29 +813,25 @@ export default function Dashboard({ session }) {
                 <thead>
                   <tr>
                     <th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Plate Number</th>
-                    <th className="num">Days</th><th className="num">Total KM</th><th className="num">Total Earnings</th>
+                    <th className="num">Days</th><th className="num">Total KM</th><th className="num">Gross Pay</th>
+                    <th className="num">Deductions</th><th className="num">Net Pay</th>
+                    <th style={{ textAlign: 'center' }}>Payslip</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {payrollLoading ? (
-                    <tr><td colSpan="7" className="rv-empty">Calculating totals...</td></tr>
-                  ) : payrollData.length === 0 ? (
-                    <tr><td colSpan="7" className="rv-empty">No data for this date range.</td></tr>
-                  ) : (
+                  {payrollLoading ? <tr><td colSpan="10" className="rv-empty">Calculating totals...</td></tr> : payrollData.length === 0 ? <tr><td colSpan="10" className="rv-empty">No data for this date range.</td></tr> : (
                     payrollData.map((d) => (
                       <tr key={d.sap_id}>
-                        <td>
-                          <div className="rv-driver-cell">
-                            <strong>{d.full_name}</strong>
-                            {editButton(d, d.plate_number)}
-                          </div>
-                        </td>
-                        <td>{d.sap_id}</td>
-                        <td>{d.team}</td>
-                        <td>{d.plate_number}</td>
+                        <td><div className="rv-driver-cell"><strong>{d.full_name}</strong>{editButton(d, d.plate_number)}</div></td>
+                        <td>{d.sap_id}</td><td>{d.team}</td><td>{d.plate_number}</td>
                         <td className="num"><strong>{d.days_worked}</strong></td>
                         <td className="num">{d.total_km.toFixed(1)} km</td>
-                        <td className="num"><strong className="text-green">{peso(d.total_earnings)}</strong></td>
+                        <td className="num">{peso(d.total_earnings)}</td>
+                        <td className="num" style={{ color: 'var(--red)' }}>-{peso(d.total_deductions)}</td>
+                        <td className="num"><strong className="text-green">{peso(d.net_pay)}</strong></td>
+                        <td style={{ textAlign: 'center' }}>
+                          <button onClick={() => openPayslip(d)} className="rv-edit-btn" style={{ display: 'inline-grid' }} title="View Payslip"><Printer size={14} /></button>
+                        </td>
                       </tr>
                     ))
                   )}
@@ -871,81 +841,47 @@ export default function Dashboard({ session }) {
           </section>
         )}
 
-        {/* =====================  DRIVERS (admin)  ===================== */}
+        {/* ===================== DRIVERS (admin) ===================== */}
         {activeTab === 'drivers' && isAdmin && (
           <>
             <section className="rv-card">
               <div className="rv-panel-head">
                 <h3><UserPlus size={18} /> {editingSapId ? 'Edit Driver' : 'Register New Driver'}</h3>
-                {editingSapId && (
-                  <button type="button" onClick={handleCancelEdit} className="rv-link-danger">Cancel edit</button>
-                )}
+                {editingSapId && <button type="button" onClick={handleCancelEdit} className="rv-link-danger">Cancel edit</button>}
               </div>
-
               <form onSubmit={handleSaveDriver} className="rv-form">
-                <label className="rv-field">
-                  <span>SAP ID</span>
-                  <input type="text" placeholder="e.g. 122" value={newDriver.sap_id}
-                    onChange={(e) => setNewDriver({ ...newDriver, sap_id: e.target.value })}
-                    required disabled={!!editingSapId} />
-                </label>
-                <label className="rv-field wide">
-                  <span>Full name</span>
-                  <input type="text" placeholder="Full name" value={newDriver.full_name}
-                    onChange={(e) => setNewDriver({ ...newDriver, full_name: e.target.value })} required />
-                </label>
-                <label className="rv-field">
-                  <span>Phone number</span>
-                  <input type="text" placeholder="09xx xxx xxxx" value={newDriver.phone}
-                    onChange={(e) => setNewDriver({ ...newDriver, phone: e.target.value })} />
-                </label>
-                <label className="rv-field">
-                  <span>Plate number</span>
-                  <input type="text" placeholder="ABC 1234" value={newDriver.vehicle_plate}
-                    onChange={(e) => setNewDriver({ ...newDriver, vehicle_plate: e.target.value })} />
-                </label>
-                <button type="submit" className="rv-pill-btn primary rv-form-submit" disabled={addingDriver}>
-                  {addingDriver ? 'Saving...' : (editingSapId ? 'Update Driver' : 'Add Driver')}
-                </button>
+                <label className="rv-field"><span>SAP ID</span><input type="text" placeholder="e.g. 122" value={newDriver.sap_id} onChange={(e) => setNewDriver({ ...newDriver, sap_id: e.target.value })} required disabled={!!editingSapId} /></label>
+                <label className="rv-field wide"><span>Full name</span><input type="text" placeholder="Full name" value={newDriver.full_name} onChange={(e) => setNewDriver({ ...newDriver, full_name: e.target.value })} required /></label>
+                <label className="rv-field"><span>Phone number</span><input type="text" placeholder="09xx xxx xxxx" value={newDriver.phone} onChange={(e) => setNewDriver({ ...newDriver, phone: e.target.value })} /></label>
+                <label className="rv-field"><span>Plate number</span><input type="text" placeholder="ABC 1234" value={newDriver.vehicle_plate} onChange={(e) => setNewDriver({ ...newDriver, vehicle_plate: e.target.value })} /></label>
+                
+                {/* Deductions Row */}
+                <label className="rv-field"><span>Cash Advance (₱)</span><input type="number" placeholder="0.00" value={newDriver.cash_advance} onChange={(e) => setNewDriver({ ...newDriver, cash_advance: e.target.value })} /></label>
+                <label className="rv-field"><span>Coop Share (₱)</span><input type="number" placeholder="0.00" value={newDriver.coop_share} onChange={(e) => setNewDriver({ ...newDriver, coop_share: e.target.value })} /></label>
+                <label className="rv-field"><span>Other Deductions (₱)</span><input type="number" placeholder="0.00" value={newDriver.other_deductions} onChange={(e) => setNewDriver({ ...newDriver, other_deductions: e.target.value })} /></label>
+                
+                <button type="submit" className="rv-pill-btn primary rv-form-submit" disabled={addingDriver}>{addingDriver ? 'Saving...' : (editingSapId ? 'Update Driver' : 'Add Driver')}</button>
               </form>
             </section>
 
             <section className="rv-card">
               <div className="rv-panel-head">
-                <div>
-                  <h3>Registered Drivers</h3>
-                  <p className="rv-sub">{filteredDirectory.length} of {directory.length} drivers</p>
-                </div>
-                <input
-                  type="search"
-                  className="rv-search"
-                  placeholder="Search name, SAP ID or plate…"
-                  value={dirSearch}
-                  onChange={(e) => setDirSearch(e.target.value)}
-                  aria-label="Search registered drivers"
-                />
+                <div><h3>Registered Drivers</h3><p className="rv-sub">{filteredDirectory.length} of {directory.length} drivers</p></div>
+                <input type="search" className="rv-search" placeholder="Search name, SAP ID or plate…" value={dirSearch} onChange={(e) => setDirSearch(e.target.value)} />
               </div>
-
-              {filteredDirectory.length === 0 ? (
-                <p className="rv-empty">{directory.length === 0 ? 'No drivers registered yet.' : 'No drivers match your search.'}</p>
-              ) : (
+              {filteredDirectory.length === 0 ? <p className="rv-empty">{directory.length === 0 ? 'No drivers registered yet.' : 'No drivers match your search.'}</p> : (
                 <div className="rv-dir-grid">
                   {filteredDirectory.map((d) => (
                     <div key={d.sap_id} className={`rv-dir-item ${editingSapId === d.sap_id ? 'editing' : ''}`}>
-                      <span className="rv-dir-avatar" aria-hidden="true">
-                        {String(d.full_name || d.sap_id).charAt(0).toUpperCase()}
-                      </span>
+                      <span className="rv-dir-avatar">{String(d.full_name || d.sap_id).charAt(0).toUpperCase()}</span>
                       <div className="rv-dir-info">
                         <strong>{d.full_name}</strong>
                         <small>SAP {d.sap_id} · {d.vehicle_plate || 'No plate'}</small>
+                        <small style={{ color: 'var(--red)' }}>Deductions: ₱{(Number(d.cash_advance)||0) + (Number(d.coop_share)||0) + (Number(d.other_deductions)||0)}</small>
                       </div>
                       <div className="rv-dir-actions">
-                        <button type="button" className="rv-edit-btn" onClick={() => handleEditClick(d.sap_id, d.full_name, d.vehicle_plate)} title="Edit driver" aria-label={`Edit ${d.full_name}`}>
-                          <Edit size={15} />
-                        </button>
-                        <button type="button" className="rv-edit-btn danger" onClick={() => handleDeleteDriver(d.sap_id, d.full_name)} title="Delete driver" aria-label={`Delete ${d.full_name}`}>
-                          <Trash2 size={15} />
-                        </button>
+                        <button type="button" className="rv-edit-btn" onClick={() => handleEditClick(d.sap_id, d.full_name, d.vehicle_plate)}><Edit size={15} /></button>
+                        <button type="button" className="rv-edit-btn danger" onClick={() => handleDeleteDriver(d.sap_id, d.full_name)}><Trash2 size={15} /></button>
                       </div>
                     </div>
                   ))}
@@ -955,35 +891,90 @@ export default function Dashboard({ session }) {
 
             <section className="rv-card rv-danger-zone">
               <div className="rv-panel-head">
-                <div>
-                  <h3><Trash2 size={18} /> Danger zone</h3>
-                  <p className="rv-sub">Permanently delete every uploaded record, for all dates. This cannot be undone.</p>
-                </div>
+                <div><h3><Trash2 size={18} /> Danger zone</h3><p className="rv-sub">Permanently delete every uploaded record. This cannot be undone.</p></div>
               </div>
-
-              <label className="rv-check">
-                <input type="checkbox" checked={wipeDirectory} onChange={(e) => setWipeDirectory(e.target.checked)} />
-                <span>Also delete the driver directory ({directory.length} drivers)</span>
-              </label>
-
+              <label className="rv-check"><input type="checkbox" checked={wipeDirectory} onChange={(e) => setWipeDirectory(e.target.checked)} /><span>Also delete the driver directory ({directory.length} drivers)</span></label>
               <div className="rv-danger-row">
-                <label className="rv-field">
-                  <span>Type {CONFIRM_PHRASE} to confirm</span>
-                  <input type="text" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={CONFIRM_PHRASE} autoComplete="off" />
-                </label>
-                <button
-                  type="button"
-                  className="rv-pill-btn rv-danger-btn"
-                  onClick={handleDeleteAll}
-                  disabled={deletingAll || confirmText.trim().toUpperCase() !== CONFIRM_PHRASE}
-                >
-                  <Trash2 size={16} /> {deletingAll ? 'Deleting...' : 'Delete all data'}
-                </button>
+                <label className="rv-field"><span>Type {CONFIRM_PHRASE} to confirm</span><input type="text" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={CONFIRM_PHRASE} autoComplete="off" /></label>
+                <button type="button" className="rv-pill-btn rv-danger-btn" onClick={handleDeleteAll} disabled={deletingAll || confirmText.trim().toUpperCase() !== CONFIRM_PHRASE}><Trash2 size={16} /> {deletingAll ? 'Deleting...' : 'Delete all data'}</button>
               </div>
             </section>
           </>
         )}
       </div>
+
+      {/* ===================== PAYSLIP MODAL ===================== */}
+      {payslipDriver && (
+        <div className="rv-modal-overlay" onClick={() => setPayslipDriver(null)}>
+          <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rv-modal-head">
+              <h2>Driver Payslip</h2>
+              <button onClick={() => setPayslipDriver(null)} className="rv-edit-btn"><X size={18} /></button>
+            </div>
+            
+            <div className="rv-modal-body" id="print-area">
+              <div className="rv-payslip-header">
+                <h3>{payslipDriver.full_name}</h3>
+                <p>SAP ID: {payslipDriver.sap_id} · Plate: {payslipDriver.plate_number}</p>
+                <p><strong>Period:</strong> {dateRangeString}</p>
+                <p><strong>Status:</strong> {periodStatus}</p>
+              </div>
+
+              <table className="rv-table" style={{ fontSize: '12px', marginTop: '20px' }}>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th className="num">Orders</th>
+                    <th className="num">Distance</th>
+                    <th className="num">Daily Earnings</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payslipDriver.dailyRecords.map((rec) => (
+                    <tr key={rec.order_date}>
+                      <td>{formatDate(rec.order_date)}</td>
+                      <td className="num">{rec.orders_count}</td>
+                      <td className="num">{Number(rec.distance).toFixed(1)} km</td>
+                      <td className="num">{peso(rec.total_pay)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="rv-payslip-summary">
+                <div className="rv-payslip-row">
+                  <span>Gross Earnings ({payslipDriver.days_worked} days)</span>
+                  <strong>{peso(payslipDriver.total_earnings)}</strong>
+                </div>
+                
+                {/* Detailed Deductions */}
+                <div style={{ borderTop: '1px solid #e5e7eb', margin: '10px 0', paddingTop: '10px' }}>
+                  <div className="rv-payslip-row"><span>Cash Advance</span><strong>-{peso(payslipDriver.cash_advance)}</strong></div>
+                  <div className="rv-payslip-row"><span>Coop Share</span><strong>-{peso(payslipDriver.coop_share)}</strong></div>
+                  <div className="rv-payslip-row"><span>Other Deductions</span><strong>-{peso(payslipDriver.other_deductions)}</strong></div>
+                </div>
+
+                <div className="rv-payslip-row" style={{ fontWeight: 'bold' }}>
+                  <span>Total Deductions</span>
+                  <strong style={{ color: 'var(--red)' }}>-{peso(payslipDriver.total_deductions)}</strong>
+                </div>
+                
+                <div className="rv-payslip-row total">
+                  <span>Net Pay</span>
+                  <strong className="text-green">{peso(payslipDriver.net_pay)}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="rv-modal-foot">
+              <button onClick={() => window.print()} className="rv-pill-btn primary">
+                <Printer size={16} /> Print / Save PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
