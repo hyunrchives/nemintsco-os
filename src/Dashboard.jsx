@@ -267,10 +267,18 @@ export default function Dashboard({ session }) {
     return 'HP';
   };
 
-  // ============ CSV UPLOAD ============
+  // ============ CSV UPLOAD (ADMIN ONLY) ============
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     if (!file) return;
+
+    // Layer 1: runtime guard — blocks any non-admin trigger of this handler
+    if (!isAdmin) {
+      alert('Access Denied. Only admins can upload CSV files.');
+      event.target.value = ''; // clear the input so the file ref doesn't stick
+      return;
+    }
+
     setUploading(true);
 
     Papa.parse(file, {
@@ -505,10 +513,22 @@ export default function Dashboard({ session }) {
   // Upload / date toolbar (shown on Overview + Daily Breakdown)
   const toolbar = (
     <div className="rv-controls">
-      <input type="file" accept=".csv" onChange={handleFileUpload} ref={fileInputRef} style={{ display: 'none' }} id="csv-upload" />
-      <label htmlFor="csv-upload" className={`rv-pill-btn primary ${uploading ? 'disabled' : ''}`}>
-        <Upload size={16} /> {uploading ? 'Uploading...' : 'Upload CSV'}
-      </label>
+      {/* Layer 2: UI hide — only admins see the upload control at all */}
+      {isAdmin && (
+        <>
+          <input
+            type="file"
+            accept=".csv"
+            onChange={handleFileUpload}
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+            id="csv-upload"
+          />
+          <label htmlFor="csv-upload" className={`rv-pill-btn primary ${uploading ? 'disabled' : ''}`}>
+            <Upload size={16} /> {uploading ? 'Uploading...' : 'Upload CSV'}
+          </label>
+        </>
+      )}
 
       <div className="rv-select">
         <Calendar size={16} />
