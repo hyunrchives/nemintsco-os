@@ -1,0 +1,75 @@
+/* DashboardPayIncentives.css — import LAST (after DashboardDark.css). */
+
+.rv-note {
+  margin: 0 0 14px; padding: 10px 14px; border-radius: 14px;
+  font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  background: rgba(255,255,255,.06); border: 1px solid var(--glass-line);
+}
+.rv-note b { color: var(--ink); font-weight: 600; }
+
+.rv-table tr.rv-click { cursor: pointer; }
+
+/* ---------- Bracket pickers (Daily Breakdown) ---------- */
+.rv-bracket-cell { display: flex; align-items: center; gap: 8px; }
+.rv-hint { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.rv-mini-select, .rv-mini-input, .rv-input-select {
+  height: 34px; padding: 0 10px; border-radius: 10px; outline: none;
+  border: 1px solid var(--glass-line); background: #151518; color: var(--ink);
+  font: inherit; font-size: 13px;
+}
+.rv-mini-select option, .rv-input-select option { background: #1c1c20; color: #fff; }
+.rv-mini-input { width: 92px; text-align: right; }
+.rv-mini-select:focus, .rv-mini-input:focus, .rv-input-select:focus { border-color: #1fbf9f; box-shadow: 0 0 0 3px rgba(31,191,159,.15); }
+.rv-input-select { height: 44px; border-radius: 14px; padding: 0 14px; width: 100%; font-size: 14px; }
+
+/* ---------- Group setup ---------- */
+.rv-group-form { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; align-items: start; }
+.rv-group-form .rv-members { grid-column: 1 / -1; }
+.rv-group-form .rv-form-submit { grid-column: 1 / -1; }
+.rv-members input[type="search"] {
+  width: 100%; height: 44px; padding: 0 16px; border-radius: 14px; outline: none;
+  border: 1px solid var(--glass-line); background: #151518; color: var(--ink); font: inherit; font-size: 14px;
+}
+.rv-sel-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.rv-sel-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(31,191,159,.5); background: rgba(31,191,159,.12); color: #4fe0c0; font: inherit; font-size: 12px;
+}
+.rv-member-list {
+  max-height: 220px; overflow-y: auto; border-radius: 14px;
+  border: 1px solid var(--glass-line); background: #151518;
+}
+.rv-member-row { display: flex; align-items: center; gap: 10px; padding: 9px 14px; cursor: pointer; font-size: 14px; color: var(--ink); }
+.rv-member-row small { margin-left: auto; color: var(--muted); font-size: 12px; }
+.rv-member-row input { width: 16px; height: 16px; accent-color: #1fbf9f; }
+.rv-member-row:hover { background: #202025; }
+.rv-member-row.on { background: rgba(31,191,159,.10); }
+
+/* ---------- Group result cards ---------- */
+.rv-group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.rv-group { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 18px; background: #151518; border: 1px solid var(--glass-line); }
+.rv-group-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rv-group-top strong { font-weight: 500; }
+.rv-group-top span { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: rgba(255,255,255,.08); color: var(--muted); }
+.rv-group.ok { border-color: rgba(31,191,159,.6); }
+.rv-group.ok .rv-group-top span { background: rgba(31,191,159,.2); color: #4fe0c0; }
+.rv-group small { font-size: 12px; color: var(--muted); }
+.rv-group small b { color: var(--ink); font-weight: 500; }
+.rv-progress { height: 8px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+.rv-progress i { display: block; height: 100%; border-radius: 999px; background: #f0a93a; }
+.rv-group.ok .rv-progress i { background: #1fbf9f; }
+.rv-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.rv-day { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; border-radius: 10px; background: rgba(255,255,255,.05); }
+.rv-day b { font-size: 15px; font-weight: 600; color: var(--ink); }
+.rv-day small { font-size: 10px; }
+.rv-group-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+/* ---------- Payslip weekly subtotal (modal stays light) ---------- */
+.rv-modal .rv-week-row td { background: #e3e9f6; font-weight: 600; }
+.rv-modal .rv-table tbody tr.rv-week-row:hover td { background: #e3e9f6; }
+.rv-modal .rv-note { background: #f4f6fa; border-color: #e5e7eb; color: #6f7f9b; }
+
+@media (max-width: 700px) {
+  .rv-group-form { grid-template-columns: 1fr; }
+  .rv-bracket-cell { flex-direction: column; align-items: flex-start; gap: 2px; }
+}

@@ -1,10 +1,11 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
 import { supabase } from './supabaseClient';
 import Papa from 'papaparse';
-import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, Download, Wallet, UserPlus, Edit, Printer, CheckCircle, Lock, Unlock, Clock, X, Home, Users } from 'lucide-react';
+import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, Download, Wallet, UserPlus, Edit, Printer, CheckCircle, Lock, Unlock, Clock, X, Home, Users, Gift, Plus } from 'lucide-react';
 import './Dashboard.css';
 import './DashboardTabs.css';
 import './DashboardDark.css';
+import './DashboardPayIncentives.css';
 
 const peso = (n, d = 2) =>
   `₱${Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
@@ -13,22 +14,89 @@ const formatDate = (dateStr) => {
   if (!dateStr) return '';
   return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
 };
+const shortDate = (dateStr) =>
+  new Date(dateStr + 'T00:00:00').toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+const weekdayShort = (dateStr) =>
+  new Date(dateStr + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'short' });
+
+// ============ BASIC PAY BRACKETS (you pick the bracket per driver per day) ============
+// Same table as the "Basic Pay Computation" sheet. Nothing is applied automatically.
+const BRACKETS = [
+  { key: '2200', label: '2,200 and up', basic: 500, ca: 0 },
+  { key: '2100', label: '2,100', basic: 400, ca: 100 },
+  { key: '2000', label: '2,000', basic: 300, ca: 200 },
+  { key: '1900', label: '1,900', basic: 200, ca: 300 },
+  { key: '1800', label: '1,800', basic: 100, ca: 400 },
+  { key: '1700', label: '1,700', basic: 0, ca: 0 },
+];
+const bracketLabel = (key) =>
+  key === 'custom' ? 'Custom' : (!key || key === 'none') ? '—' : (BRACKETS.find((b) => b.key === key)?.label || key);
+
+// Only a hint shown next to an unassigned day. It never changes any value.
+const suggestBracket = (earnings) => {
+  const e = Number(earnings) || 0;
+  if (e >= 2200) return '2200';
+  if (e >= 1700) return String(Math.floor(e / 100) * 100);
+  return null;
+};
+
+// ============ INCENTIVE RULES (edit these numbers if the policy changes) ============
+const IND_TIERS = [                    // Individual: per day, on that day's earnings
+  { min: 4000, rate: 0.10 },
+  { min: 2500, rate: 0.05 },
+];
+const RICE_GROUP_TARGET = 150000;      // group of 10 × ₱2,500 × 6 days
+const RICE_CAPTAIN_KG = 10;
+const RICE_MEMBER_KG = 5;
+const CAPTAIN_PER_MEMBER_DAY = 10;     // ₱10 per member that has a record that day (10 members = ₱100/day)
+const CAPTAIN_WEEK_CAP = 600;          // 6 days × ₱100
+const MAX_MEMBERS = 10;
+
+const individualRate = (earnings) => {
+  const e = Number(earnings) || 0;
+  const tier = IND_TIERS.find((t) => e >= t.min);
+  return tier ? tier.rate : 0;
+};
+
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+// ---------- date helpers ----------
+const toISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return toISO(d); };
+const mondayOf = (s) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return toISO(d); };
+
+// Period right before the selected one (its CA charges are deducted in full on this payroll)
+const getPrevPeriod = (start, end) => {
+  if (!start || !end) return null;
+  const s = new Date(start + 'T00:00:00');
+  if (s.getDate() === 1) return [toISO(new Date(s.getFullYear(), s.getMonth() - 1, 16)), toISO(new Date(s.getFullYear(), s.getMonth(), 0))];
+  if (s.getDate() === 16) return [toISO(new Date(s.getFullYear(), s.getMonth(), 1)), toISO(new Date(s.getFullYear(), s.getMonth(), 15))];
+  const len = Math.round((new Date(end + 'T00:00:00') - s) / 86400000) + 1;
+  const prevEnd = addDays(start, -1);
+  return [addDays(prevEnd, -(len - 1)), prevEnd];
+};
 
 const STATUS_FILTERS = ['All', 'HP', 'MP', 'LP', 'Zombie'];
 const EMPTY_DRIVER = { sap_id: '', full_name: '', phone: '', vehicle_plate: '', cash_advance: 0, coop_share: 0, other_deductions: 0 };
+const EMPTY_GROUP = { id: null, name: '', captain: '', members: [] };
 
 export default function Dashboard({ session }) {
   const [rawDrivers, setDrivers] = useState([]);
   const [rawPayrollDrivers, setPayrollDrivers] = useState([]);
+  const [rawIncDrivers, setIncDrivers] = useState([]);
   const [directory, setDirectory] = useState([]);
+  const [brackets, setBrackets] = useState({}); // key `${sap_id}__${order_date}` -> row
+  const [groups, setGroups] = useState([]);
 
   const [availableDates, setAvailableDates] = useState([]);
   const [selectedDate, setSelectedDate] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [incWeek, setIncWeek] = useState(''); // Monday of the incentive week
 
   const [loading, setLoading] = useState(false);
   const [payrollLoading, setPayrollLoading] = useState(false);
+  const [incLoading, setIncLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -40,6 +108,10 @@ export default function Dashboard({ session }) {
   const [newDriver, setNewDriver] = useState(EMPTY_DRIVER);
   const [editingSapId, setEditingSapId] = useState(null);
   const [addingDriver, setAddingDriver] = useState(false);
+
+  const [groupForm, setGroupForm] = useState(EMPTY_GROUP);
+  const [memberSearch, setMemberSearch] = useState('');
+  const [savingGroup, setSavingGroup] = useState(false);
 
   const [deletingAll, setDeletingAll] = useState(false);
   const [wipeDirectory, setWipeDirectory] = useState(false);
@@ -56,12 +128,37 @@ export default function Dashboard({ session }) {
     { id: 'daily', label: 'Daily Breakdown', icon: <Calendar size={22} /> },
     ...(isAdmin ? [
       { id: 'payroll', label: 'Payroll', icon: <Wallet size={22} /> },
+      { id: 'incentives', label: 'Incentives', icon: <Gift size={22} /> },
       { id: 'drivers', label: 'Drivers', icon: <Users size={22} /> },
     ] : []),
   ];
   const activeTab = TABS.some((t) => t.id === tab) ? tab : 'overview';
 
   const dirMap = useMemo(() => new Map(directory.map((d) => [String(d.sap_id).trim(), d])), [directory]);
+
+  // ============ COMBINE DIRECTORY WITH UPLOADED DRIVERS ============
+  const combinedDirectory = useMemo(() => {
+    const list = [...directory];
+    const seen = new Set(list.map((d) => String(d.sap_id).trim()));
+    
+    rawPayrollDrivers.forEach((d) => {
+      const id = String(d.sap_id).trim();
+      if (!seen.has(id)) {
+        seen.add(id);
+        list.push({
+          sap_id: d.sap_id,
+          full_name: d.full_name || 'Unknown Driver',
+          vehicle_plate: d.vehicle_plate || '',
+          phone: d.phone || '',
+          cash_advance: 0, // default for uploaded-only drivers
+          coop_share: 0,
+          other_deductions: 0,
+        });
+      }
+    });
+    return list.sort((a, b) => String(a.full_name).localeCompare(String(b.full_name)));
+  }, [directory, rawPayrollDrivers]);
+
   const withDirectory = (rows) =>
     rows.map((r) => {
       const e = dirMap.get(String(r.sap_id).trim());
@@ -78,11 +175,37 @@ export default function Dashboard({ session }) {
     });
   const drivers = useMemo(() => withDirectory(rawDrivers), [rawDrivers, dirMap]);
   const payrollDrivers = useMemo(() => withDirectory(rawPayrollDrivers), [rawPayrollDrivers, dirMap]);
+  const incDrivers = useMemo(() => withDirectory(rawIncDrivers), [rawIncDrivers, dirMap]);
 
   // ============ FETCH DATA ============
   const fetchDirectory = async () => {
     const { data } = await supabase.from('driver_directory').select('*').order('sap_id', { ascending: true });
     if (data) setDirectory(data);
+  };
+
+  const fetchGroups = async () => {
+    const { data, error } = await supabase.from('incentive_groups').select('*').order('name', { ascending: true });
+    if (!error && data) setGroups(data);
+  };
+
+  // brackets for a date range (paged, so more than 1000 rows still load)
+  const fetchBrackets = async (start, end) => {
+    if (!start || !end) return;
+    let all = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('daily_brackets').select('*').gte('order_date', start).lte('order_date', end).range(from, from + 999);
+      if (error || !data) break;
+      all = all.concat(data);
+      if (data.length < 1000) break;
+      from += 1000;
+    }
+    setBrackets((prev) => {
+      const next = { ...prev };
+      all.forEach((r) => { next[`${r.sap_id}__${r.order_date}`] = r; });
+      return next;
+    });
   };
 
   const fetchAvailableDates = async () => {
@@ -96,6 +219,7 @@ export default function Dashboard({ session }) {
           setStartDate(unique[unique.length - 1]);
           setEndDate(unique[0]);
         }
+        if (!incWeek) setIncWeek(mondayOf(unique[0]));
       }
     }
   };
@@ -115,12 +239,86 @@ export default function Dashboard({ session }) {
     const { data, error } = await supabase
       .from('daily_driver_stats').select('*').gte('order_date', start).lte('order_date', end);
     if (!error) setPayrollDrivers(data || []);
+    await fetchBrackets(start, end);
+    const prev = getPrevPeriod(start, end);
+    if (prev) await fetchBrackets(prev[0], prev[1]);
     setPayrollLoading(false);
   };
 
+  const fetchIncDrivers = async (weekStart) => {
+    if (!weekStart) return;
+    setIncLoading(true);
+    const { data, error } = await supabase
+      .from('daily_driver_stats').select('*').gte('order_date', weekStart).lte('order_date', addDays(weekStart, 6));
+    if (!error) setIncDrivers(data || []);
+    setIncLoading(false);
+  };
+
   useEffect(() => { fetchAvailableDates(); fetchDirectory(); }, []);
-  useEffect(() => { if (selectedDate) fetchDrivers(selectedDate); }, [selectedDate]);
+  useEffect(() => { if (isAdmin) fetchGroups(); }, [isAdmin]);
+  useEffect(() => { if (selectedDate) { fetchDrivers(selectedDate); if (isAdmin) fetchBrackets(selectedDate, selectedDate); } }, [selectedDate]);
   useEffect(() => { if (isAdmin && startDate && endDate) fetchPayrollDrivers(startDate, endDate); }, [startDate, endDate, isAdmin]);
+  useEffect(() => { if (isAdmin && incWeek) fetchIncDrivers(incWeek); }, [incWeek, isAdmin]);
+
+  // ============ MANUAL BRACKETS ============
+  const isLocked = (date) => periodStatus === 'Paid' && startDate && endDate && date >= startDate && date <= endDate;
+
+  const saveBracket = async (sapId, date, key, custom, silent = false) => {
+    if (!isAdmin) return;
+    if (isLocked(date)) {
+      if (!silent) alert('🔒 This date is inside a period marked as PAID. Unlock it in Payroll first.');
+      return;
+    }
+    const k = `${sapId}__${date}`;
+
+    if (key === 'none') {
+      setBrackets((prev) => { const next = { ...prev }; delete next[k]; return next; });
+      const { error } = await supabase.from('daily_brackets').delete().eq('sap_id', sapId).eq('order_date', date);
+      if (error && !silent) alert('Could not clear bracket: ' + error.message);
+      return;
+    }
+
+    let basic = 0, ca = 0;
+    if (key === 'custom') {
+      basic = Number(custom?.basic) || 0;
+      ca = Number(custom?.ca) || 0;
+    } else {
+      const b = BRACKETS.find((x) => x.key === key);
+      basic = b.basic; ca = b.ca;
+    }
+    const row = { sap_id: sapId, order_date: date, bracket: key, basic_rate: basic, charge_ca: ca, total_pay: round2(basic + ca) };
+    setBrackets((prev) => ({ ...prev, [k]: row }));
+    const { error } = await supabase.from('daily_brackets').upsert([row], { onConflict: 'sap_id,order_date' });
+    if (error && !silent) alert('Could not save bracket: ' + error.message);
+  };
+
+  // ============ AUTO-ASSIGN BRACKETS ============
+  useEffect(() => {
+    if (!isAdmin || !drivers.length) return;
+
+    drivers.forEach((d) => {
+      const k = `${d.sap_id}__${d.order_date}`;
+      const existing = brackets[k];
+      
+      // Only auto-assign if there is no bracket set yet
+      if (!existing || existing.bracket === 'none') {
+        const suggested = suggestBracket(d.total_pay);
+        if (suggested) {
+          // Call saveBracket silently to prevent alert popups for background saves
+          saveBracket(d.sap_id, d.order_date, suggested, null, true); 
+        }
+      }
+    });
+  }, [drivers, brackets, isAdmin]);
+
+  const setCustomLocal = (sapId, date, field, value) => {
+    const k = `${sapId}__${date}`;
+    setBrackets((prev) => ({ ...prev, [k]: { ...prev[k], [field]: value } }));
+  };
+  const commitCustom = (sapId, date) => {
+    const b = brackets[`${sapId}__${date}`];
+    if (b) saveBracket(sapId, date, 'custom', { basic: b.basic_rate, ca: b.charge_ca });
+  };
 
   // ============ PAY PERIOD PRESETS ============
   const setPeriodPreset = (type) => {
@@ -143,12 +341,7 @@ export default function Dashboard({ session }) {
       setStartDate(`${y}-${mStr}-16`);
       setEndDate(`${y}-${mStr}-${lastDay}`);
     } else if (type === 'Last 7 Days') {
-      const pastDate = new Date(latestDate);
-      pastDate.setDate(pastDate.getDate() - 6);
-      const pY = pastDate.getFullYear();
-      const pM = String(pastDate.getMonth() + 1).padStart(2, '0');
-      const pD = String(pastDate.getDate()).padStart(2, '0');
-      setStartDate(`${pY}-${pM}-${pD}`);
+      setStartDate(addDays(latestDateStr, -6));
       setEndDate(latestDateStr);
     }
   };
@@ -177,6 +370,7 @@ export default function Dashboard({ session }) {
       await fetchDirectory();
       if (selectedDate) fetchDrivers(selectedDate);
       if (isAdmin && startDate && endDate) fetchPayrollDrivers(startDate, endDate);
+      if (isAdmin && incWeek) fetchIncDrivers(incWeek);
     }
     setAddingDriver(false);
   };
@@ -206,6 +400,45 @@ export default function Dashboard({ session }) {
     else await fetchDirectory();
   };
 
+  // ============ INCENTIVE GROUPS (manual) ============
+  const toggleMember = (sapId) => {
+    setGroupForm((f) => {
+      if (f.members.includes(sapId)) return { ...f, members: f.members.filter((m) => m !== sapId) };
+      if (f.members.length >= MAX_MEMBERS) { alert(`A group can have up to ${MAX_MEMBERS} members.`); return f; }
+      return { ...f, members: [...f.members, sapId] };
+    });
+  };
+
+  const handleSaveGroup = async (e) => {
+    e.preventDefault();
+    if (!groupForm.name.trim()) return alert('Enter a group name.');
+    if (!groupForm.captain) return alert('Pick the team captain.');
+    setSavingGroup(true);
+    const payload = {
+      name: groupForm.name.trim(),
+      captain_sap_id: groupForm.captain,
+      member_sap_ids: groupForm.members.filter((m) => m !== groupForm.captain),
+    };
+    const res = groupForm.id
+      ? await supabase.from('incentive_groups').update(payload).eq('id', groupForm.id)
+      : await supabase.from('incentive_groups').insert([payload]);
+    if (res.error) alert('Error saving group: ' + res.error.message);
+    else { setGroupForm(EMPTY_GROUP); setMemberSearch(''); await fetchGroups(); }
+    setSavingGroup(false);
+  };
+
+  const handleEditGroup = (g) => {
+    setGroupForm({ id: g.id, name: g.name, captain: String(g.captain_sap_id), members: (g.member_sap_ids || []).map(String) });
+    setMemberSearch('');
+  };
+
+  const handleDeleteGroup = async (g) => {
+    if (!window.confirm(`Delete group "${g.name}"?`)) return;
+    const { error } = await supabase.from('incentive_groups').delete().eq('id', g.id);
+    if (error) alert('Error deleting group: ' + error.message);
+    else { if (groupForm.id === g.id) setGroupForm(EMPTY_GROUP); await fetchGroups(); }
+  };
+
   // ============ DELETE ALL DATA ============
   const handleDeleteAll = async () => {
     if (!isAdmin) return alert('Access Denied.');
@@ -219,10 +452,11 @@ export default function Dashboard({ session }) {
       setDeletingAll(false);
       return;
     }
+    await supabase.from('daily_brackets').delete().not('sap_id', 'is', null);
     if (wipeDirectory) await supabase.from('driver_directory').delete().not('sap_id', 'is', null);
 
-    setDrivers([]); setPayrollDrivers([]); setAvailableDates([]);
-    setSelectedDate(''); setStartDate(''); setEndDate('');
+    setDrivers([]); setPayrollDrivers([]); setIncDrivers([]); setBrackets({}); setAvailableDates([]);
+    setSelectedDate(''); setStartDate(''); setEndDate(''); setIncWeek('');
     handleCancelEdit();
     await fetchDirectory();
     setConfirmText(''); setWipeDirectory(false); setDeletingAll(false);
@@ -385,78 +619,220 @@ export default function Dashboard({ session }) {
     };
   }, [drivers]);
 
-  // ============ PAYROLL ============
+  // ============ PAYROLL (sums the brackets you set) ============
+  const prevPeriod = getPrevPeriod(startDate, endDate);
+
   const payrollData = useMemo(() => {
-    if (!payrollDrivers.length) return [];
-    const grouped = {};
-    payrollDrivers.forEach((d) => {
-      if (!grouped[d.sap_id]) {
-        grouped[d.sap_id] = {
-          sap_id: d.sap_id, full_name: d.full_name || 'Unknown Driver', team: d.team,
-          plate_number: d.vehicle_plate || '-', total_km: 0, total_earnings: 0, total_orders: 0, days_worked: new Set(),
-          cash_advance: d.cash_advance || 0, coop_share: d.coop_share || 0, other_deductions: d.other_deductions || 0,
+    const rows = {};
+    const ensure = (sapId, d = {}) => {
+      const id = String(sapId).trim();
+      const dir = dirMap.get(id) || {};
+      if (!rows[sapId]) {
+        rows[sapId] = {
+          sap_id: sapId, full_name: d.full_name || dir.full_name || 'Unknown Driver', team: d.team || getTeam(sapId),
+          plate_number: d.vehicle_plate || dir.vehicle_plate || '-',
+          days_worked: 0, total_earnings: 0, basic: 0, basic_ca: 0, total_basic: 0,
+          prev_ca: 0,
+          partial_ca: Number(d.cash_advance ?? dir.cash_advance ?? 0),
+          coop_share: Number(d.coop_share ?? dir.coop_share ?? 0),
+          other_deductions: Number(d.other_deductions ?? dir.other_deductions ?? 0),
         };
       }
-      grouped[d.sap_id].total_km += Number(d.distance || 0);
-      grouped[d.sap_id].total_earnings += Number(d.total_pay || 0);
-      grouped[d.sap_id].total_orders += Number(d.orders_count || 0);
-      if (d.vehicle_plate) grouped[d.sap_id].plate_number = d.vehicle_plate;
-      if (d.order_date) grouped[d.sap_id].days_worked.add(d.order_date);
+      return rows[sapId];
+    };
+
+    payrollDrivers.forEach((d) => {
+      const r = ensure(d.sap_id, d);
+      r.total_earnings += Number(d.total_pay || 0);
+      const b = brackets[`${d.sap_id}__${d.order_date}`];
+      if (b) {
+        r.basic += Number(b.basic_rate || 0);
+        r.basic_ca += Number(b.charge_ca || 0);
+        r.total_basic += Number(b.total_pay || 0);
+        if (Number(b.total_pay) > 0) r.days_worked += 1;
+      }
+      if (d.vehicle_plate) r.plate_number = d.vehicle_plate;
     });
 
-    return Object.values(grouped).map((d) => {
-      const totalDeductions = Number(d.cash_advance) + Number(d.coop_share) + Number(d.other_deductions);
-      return { ...d, days_worked: d.days_worked.size, total_deductions: totalDeductions, net_pay: Number(d.total_earnings) - totalDeductions };
-    }).sort((a, b) => b.total_km - a.total_km);
-  }, [payrollDrivers]);
+    if (prevPeriod) {
+      Object.values(brackets).forEach((b) => {
+        if (b.order_date >= prevPeriod[0] && b.order_date <= prevPeriod[1] && Number(b.charge_ca) > 0) {
+          ensure(b.sap_id).prev_ca += Number(b.charge_ca);
+        }
+      });
+    }
+
+    return Object.values(rows).map((r) => {
+      const deductions = r.prev_ca + r.partial_ca + r.coop_share + r.other_deductions;
+      return {
+        ...r,
+        total_earnings: round2(r.total_earnings), basic: round2(r.basic), basic_ca: round2(r.basic_ca),
+        total_basic: round2(r.total_basic), prev_ca: round2(r.prev_ca),
+        total_deductions: round2(deductions), net_pay: round2(r.total_basic - deductions),
+      };
+    }).sort((a, b) => String(a.sap_id).localeCompare(String(b.sap_id), undefined, { numeric: true }));
+  }, [payrollDrivers, brackets, startDate, endDate, dirMap]);
 
   const payrollTotals = useMemo(() => ({
     drivers: payrollData.length,
-    km: payrollData.reduce((s, d) => s + d.total_km, 0),
-    earnings: payrollData.reduce((s, d) => s + d.total_earnings, 0),
+    basic: payrollData.reduce((s, d) => s + d.basic, 0),
+    basicCa: payrollData.reduce((s, d) => s + d.basic_ca, 0),
+    total: payrollData.reduce((s, d) => s + d.total_basic, 0),
     net: payrollData.reduce((s, d) => s + d.net_pay, 0),
   }), [payrollData]);
 
+  const unsetDays = useMemo(
+    () => payrollDrivers.filter((d) => !brackets[`${d.sap_id}__${d.order_date}`]).length,
+    [payrollDrivers, brackets]
+  );
+
   const dateRangeString = startDate && endDate ? `${formatDate(startDate)} - ${formatDate(endDate)}` : 'Select Dates';
+  const prevRangeString = prevPeriod ? `${formatDate(prevPeriod[0])} - ${formatDate(prevPeriod[1])}` : '';
+
+  // ============ INCENTIVES (Mon-Sun, released every Tuesday) ============
+  const weekOptions = useMemo(
+    () => [...new Set(availableDates.map(mondayOf))].sort().reverse(),
+    [availableDates]
+  );
+  const weekDays = useMemo(
+    () => (incWeek ? Array.from({ length: 7 }, (_, i) => addDays(incWeek, i)) : []),
+    [incWeek]
+  );
+
+  const { incentiveRows, groupCards } = useMemo(() => {
+    const stat = {};
+    const present = new Set();
+    incDrivers.forEach((d) => {
+      const id = String(d.sap_id).trim();
+      present.add(`${id}__${d.order_date}`);
+      if (!stat[id]) stat[id] = { earnings: 0, individual: 0, days: 0, name: d.full_name };
+      const e = Number(d.total_pay || 0);
+      stat[id].earnings += e;
+      stat[id].individual += e * individualRate(e);
+      stat[id].days += 1;
+    });
+    const nameOf = (id) => stat[id]?.name || dirMap.get(id)?.full_name || id;
+
+    const cards = groups.map((g) => {
+      const captain = String(g.captain_sap_id).trim();
+      const members = (g.member_sap_ids || []).map((m) => String(m).trim()).filter((m) => m && m !== captain);
+      const perDay = weekDays.map((day) => members.filter((m) => present.has(`${m}__${day}`)).length);
+      const rawBonus = perDay.reduce((s, n) => s + n * CAPTAIN_PER_MEMBER_DAY, 0);
+      const total = members.reduce((s, m) => s + (stat[m]?.earnings || 0), 0);
+      return {
+        id: g.id, name: g.name, captain, captainName: nameOf(captain), members,
+        perDay, bonus: Math.min(rawBonus, CAPTAIN_WEEK_CAP), rawBonus,
+        total, riceOk: total >= RICE_GROUP_TARGET,
+        raw: g,
+      };
+    });
+
+    const roleMap = {};
+    cards.forEach((c) => {
+      roleMap[c.captain] = { role: 'Captain', group: c.name };
+      c.members.forEach((m) => { if (!roleMap[m]) roleMap[m] = { role: 'Member', group: c.name }; });
+    });
+
+    const ids = new Set([...Object.keys(stat), ...Object.keys(roleMap)]);
+    const rows = [...ids].map((id) => {
+      const individual = round2(stat[id]?.individual || 0);
+      const captain_bonus = cards.filter((c) => c.captain === id).reduce((s, c) => s + c.bonus, 0);
+      const rice_kg = cards.reduce((s, c) => {
+        if (!c.riceOk) return s;
+        if (c.captain === id) return s + RICE_CAPTAIN_KG;
+        return c.members.includes(id) ? s + RICE_MEMBER_KG : s;
+      }, 0);
+      return {
+        sap_id: id, full_name: nameOf(id),
+        role: roleMap[id]?.role || '', group_name: roleMap[id]?.group || '',
+        week_earnings: round2(stat[id]?.earnings || 0), individual, captain_bonus, rice_kg,
+        total_cash: round2(individual + captain_bonus),
+      };
+    }).sort((a, b) => String(a.sap_id).localeCompare(String(b.sap_id), undefined, { numeric: true }));
+
+    return { incentiveRows: rows, groupCards: cards };
+  }, [incDrivers, groups, weekDays, dirMap]);
+
+  const incentiveTotals = useMemo(() => ({
+    cash: incentiveRows.reduce((s, r) => s + r.total_cash, 0),
+    individual: incentiveRows.reduce((s, r) => s + r.individual, 0),
+    captain: incentiveRows.reduce((s, r) => s + r.captain_bonus, 0),
+    rice: incentiveRows.reduce((s, r) => s + r.rice_kg, 0),
+  }), [incentiveRows]);
+
+  const incWeekRange = incWeek ? `${formatDate(incWeek)} - ${formatDate(addDays(incWeek, 6))}` : 'Select week';
+  const incReleaseDate = incWeek ? formatDate(addDays(incWeek, 8)) : '';
 
   // ============ EXPORT ============
-  const handleExportCSV = () => {
-    if (!isAdmin) return;
-    if (payrollData.length === 0) return alert('No data to export.');
-
-    const csvData = payrollData.map((d) => ({
-      'Date Range': dateRangeString,
-      'SAP ID': d.sap_id,
-      'Driver Name': d.full_name,
-      'Team': d.team,
-      'Plate Number': d.plate_number,
-      'Days Worked': d.days_worked,
-      'Total KM': d.total_km.toFixed(1),
-      'Gross Earnings': d.total_earnings.toFixed(2),
-      'Cash Advance': d.cash_advance.toFixed(2),
-      'Coop Share': d.coop_share.toFixed(2),
-      'Other Deductions': d.other_deductions.toFixed(2),
-      'Total Deductions': d.total_deductions.toFixed(2),
-      'Net Pay': d.net_pay.toFixed(2),
-      'Status': periodStatus,
-    }));
-
-    const csv = Papa.unparse(csvData);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const downloadCSV = (rows, filename) => {
+    const blob = new Blob([Papa.unparse(rows)], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `Payroll_${periodStatus}_${startDate}_to_${endDate}.csv`);
+    link.setAttribute('download', filename);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
+  const handleExportCSV = () => {
+    if (!isAdmin) return;
+    if (payrollData.length === 0) return alert('No data to export.');
+    downloadCSV(payrollData.map((d) => ({
+      'SAP ID': d.sap_id,
+      'NAME': d.full_name,
+      '#DAYS': d.days_worked,
+      'Total Earnings': d.total_earnings.toFixed(2),
+      'BASIC': d.basic.toFixed(2),
+      'BASIC CA': d.basic_ca.toFixed(2),
+      'TOTAL': d.total_basic.toFixed(2),
+      'Prev Period CA': d.prev_ca.toFixed(2),
+      'CA Partial Payment': d.partial_ca.toFixed(2),
+      'Coop Share': d.coop_share.toFixed(2),
+      'Other Deductions': d.other_deductions.toFixed(2),
+      'Total Deductions': d.total_deductions.toFixed(2),
+      'Net Pay': d.net_pay.toFixed(2),
+      'Date Range': dateRangeString,
+      'Status': periodStatus,
+    })), `Payroll_${periodStatus}_${startDate}_to_${endDate}.csv`);
+  };
+
+  const handleExportIncentives = () => {
+    if (incentiveRows.length === 0) return alert('No data to export.');
+    downloadCSV(incentiveRows.map((r) => ({
+      'SAP ID': r.sap_id,
+      'NAME': r.full_name,
+      'Group': r.group_name || '-',
+      'Role': r.role || '-',
+      'Week Earnings': r.week_earnings.toFixed(2),
+      'Individual Incentive': r.individual.toFixed(2),
+      'Captain Bonus': r.captain_bonus.toFixed(2),
+      'Rice (kg)': r.rice_kg,
+      'Total Cash Incentive': r.total_cash.toFixed(2),
+      'Week': incWeekRange,
+      'Release Date': incReleaseDate,
+    })), `Incentives_${incWeek}.csv`);
+  };
+
+  // Driver slip: daily rows grouped by Mon-Sun week, with an automatic total for each week
   const openPayslip = (driver) => {
-    const dailyRecords = payrollDrivers
+    const recs = payrollDrivers
       .filter((d) => d.sap_id === driver.sap_id)
-      .sort((a, b) => new Date(a.order_date) - new Date(b.order_date));
-    setPayslipDriver({ ...driver, dailyRecords });
+      .sort((a, b) => a.order_date.localeCompare(b.order_date));
+    const weeksMap = {};
+    recs.forEach((rec) => {
+      const b = brackets[`${rec.sap_id}__${rec.order_date}`];
+      const w = mondayOf(rec.order_date);
+      if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, basic: 0, ca: 0, total: 0 };
+      const wk = weeksMap[w];
+      const row = {
+        date: rec.order_date, earnings: Number(rec.total_pay || 0), bracket: b?.bracket || 'none',
+        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), total: Number(b?.total_pay || 0),
+      };
+      wk.rows.push(row);
+      wk.earnings += row.earnings; wk.basic += row.basic; wk.ca += row.ca; wk.total += row.total;
+    });
+    setPayslipDriver({ ...driver, weeks: Object.values(weeksMap).sort((a, b) => a.start.localeCompare(b.start)) });
   };
 
   // ============ FILTERS ============
@@ -475,13 +851,22 @@ export default function Dashboard({ session }) {
 
   const filteredDirectory = useMemo(() => {
     const q = dirSearch.trim().toLowerCase();
-    if (!q) return directory;
-    return directory.filter((d) =>
+    if (!q) return combinedDirectory;
+    return combinedDirectory.filter((d) =>
       String(d.full_name || '').toLowerCase().includes(q) ||
       String(d.sap_id || '').toLowerCase().includes(q) ||
       String(d.vehicle_plate || '').toLowerCase().includes(q)
     );
-  }, [directory, dirSearch]);
+  }, [combinedDirectory, dirSearch]);
+
+  const memberChoices = useMemo(() => {
+    const q = memberSearch.trim().toLowerCase();
+    return combinedDirectory.filter((d) => {
+      if (String(d.sap_id) === groupForm.captain) return false;
+      if (!q) return true;
+      return String(d.full_name || '').toLowerCase().includes(q) || String(d.sap_id || '').toLowerCase().includes(q);
+    });
+  }, [combinedDirectory, memberSearch, groupForm.captain]);
 
   // ---------- view helpers ----------
   const rawName = (session?.user?.email || 'there').split('@')[0];
@@ -528,10 +913,50 @@ export default function Dashboard({ session }) {
   );
 
   const editButton = (d, plate) => (
-    <button type="button" className="rv-edit-btn" onClick={() => handleEditClick(d.sap_id, d.full_name, plate)} title="Edit driver">
+    <button type="button" className="rv-edit-btn" onClick={(e) => { e.stopPropagation(); handleEditClick(d.sap_id, d.full_name, plate); }} title="Edit driver">
       <Edit size={14} />
     </button>
   );
+
+  // admin-only cells in the Daily Breakdown: bracket picker + resulting amounts
+  const bracketCells = (d) => {
+    const k = `${d.sap_id}__${d.order_date}`;
+    const b = brackets[k];
+    const key = b?.bracket || 'none';
+    
+    // If it's not manually set, we show the suggested one visually
+    const displayKey = key === 'none' ? (suggestBracket(d.total_pay) || 'none') : key;
+    
+    // Calculate visual amounts if it hasn't saved yet
+    const visualBasic = b ? b.basic_rate : (BRACKETS.find(x => x.key === displayKey)?.basic || 0);
+    const visualCA = b ? b.charge_ca : (BRACKETS.find(x => x.key === displayKey)?.ca || 0);
+    const visualTotal = visualBasic + visualCA;
+
+    return (
+      <>
+        <td>
+          <div className="rv-bracket-cell">
+            <select className="rv-mini-select" value={displayKey} onChange={(e) => saveBracket(d.sap_id, d.order_date, e.target.value)} aria-label="Bracket">
+              <option value="none">— none —</option>
+              {BRACKETS.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+        </td>
+        <td className="num">
+          {displayKey === 'custom'
+            ? <input type="number" className="rv-mini-input" value={b?.basic_rate || 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'basic_rate', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
+            : displayKey !== 'none' ? peso(visualBasic) : '-'}
+        </td>
+        <td className="num">
+          {displayKey === 'custom'
+            ? <input type="number" className="rv-mini-input" value={b?.charge_ca || 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'charge_ca', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
+            : displayKey !== 'none' ? peso(visualCA) : '-'}
+        </td>
+        <td className="num"><strong>{displayKey !== 'none' ? peso(visualTotal) : '-'}</strong></td>
+      </>
+    );
+  };
 
   return (
     <div className="rv-page">
@@ -699,12 +1124,16 @@ export default function Dashboard({ session }) {
                     </div>
                   </div>
                 </div>
+                {isAdmin && <p className="rv-note">Brackets are automatically assigned based on the day's earnings. You can still manually override them using the dropdown if needed.</p>}
 
                 {loading ? <p className="rv-empty">Loading...</p> : drivers.length === 0 ? <p className="rv-empty">No data for {selectedDate}.</p> : filteredDaily.length === 0 ? <p className="rv-empty">No drivers match filter.</p> : (
                   <div className="rv-table-scroll">
                     <table className="rv-table">
                       <thead>
-                        <tr><th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Phone</th><th className="num">Orders</th><th className="num">Total Pay</th><th className="num">Distance</th><th>Status</th></tr>
+                        <tr>
+                          <th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Phone</th><th className="num">Orders</th><th className="num">Total Pay</th><th className="num">Distance</th><th>Status</th>
+                          {isAdmin && <><th>Bracket</th><th className="num">Basic</th><th className="num">CA</th><th className="num">Pay</th></>}
+                        </tr>
                       </thead>
                       <tbody>
                         {filteredDaily.map((d) => (
@@ -713,6 +1142,7 @@ export default function Dashboard({ session }) {
                             <td>{d.sap_id}</td><td>{d.team}</td><td>{d.phone || '-'}</td>
                             <td className="num">{d.orders_count}</td><td className="num">{peso(d.total_pay)}</td><td className="num">{Number(d.distance).toFixed(1)} km</td>
                             <td><span className={`rv-badge ${String(d.status).toLowerCase()}`}>{d.status}</span></td>
+                            {isAdmin && bracketCells(d)}
                           </tr>
                         ))}
                       </tbody>
@@ -728,10 +1158,10 @@ export default function Dashboard({ session }) {
             <section className="rv-card rv-payroll-section">
               <div className="rv-panel-head">
                 <div>
-                  <h3><Wallet size={18} /> Payroll Export</h3>
+                  <h3><Wallet size={18} /> Payroll</h3>
                   <p className="rv-sub">{dateRangeString} <span className={`rv-period-badge ${periodStatus.toLowerCase()}`}>{periodStatus}</span></p>
                 </div>
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                   {periodStatus === 'Draft' && <button onClick={() => setPeriodStatus('Approved')} className="rv-pill-btn" style={{ background: '#eab308', color: 'white', borderColor: '#eab308' }}><CheckCircle size={16} /> Approve</button>}
                   {periodStatus === 'Approved' && <button onClick={() => setPeriodStatus('Paid')} className="rv-pill-btn" style={{ background: '#16a34a', color: 'white', borderColor: '#16a34a' }}><Lock size={16} /> Mark as Paid</button>}
                   {periodStatus === 'Paid' && <button onClick={() => setPeriodStatus('Draft')} className="rv-pill-btn" style={{ background: '#ef4444', color: 'white', borderColor: '#ef4444' }}><Unlock size={16} /> Unlock</button>}
@@ -764,34 +1194,42 @@ export default function Dashboard({ session }) {
 
               <div className="rv-chips">
                 <div className="rv-chip"><span>Drivers</span><strong>{payrollTotals.drivers}</strong></div>
-                <div className="rv-chip"><span>Total KM</span><strong>{payrollTotals.km.toFixed(1)}</strong></div>
-                <div className="rv-chip hl"><span>Total Gross</span><strong>{peso(payrollTotals.earnings)}</strong></div>
+                <div className="rv-chip"><span>Basic</span><strong>{peso(payrollTotals.basic)}</strong></div>
+                <div className="rv-chip"><span>Basic CA</span><strong>{peso(payrollTotals.basicCa)}</strong></div>
+                <div className="rv-chip hl"><span>Total Pay</span><strong>{peso(payrollTotals.total)}</strong></div>
                 <div className="rv-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>Total Net Pay</span><strong>{peso(payrollTotals.net)}</strong></div>
               </div>
+
+              <p className="rv-note">
+                Totals add up the brackets you set in Daily Breakdown. {unsetDays > 0 ? <b>{unsetDays} driver-days in this period have no bracket yet. </b> : null}
+                Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + coop + other. Click a driver to see the slip.
+              </p>
 
               <div className="rv-table-scroll">
                 <table className="rv-table">
                   <thead>
                     <tr>
-                      <th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Plate Number</th>
-                      <th className="num">Days</th><th className="num">Total KM</th><th className="num">Gross Pay</th>
+                      <th>SAP ID</th><th>Name</th><th className="num">#Days</th><th className="num">Earnings</th>
+                      <th className="num">Basic</th><th className="num">Basic CA</th><th className="num">Total</th>
                       <th className="num">Deductions</th><th className="num">Net Pay</th>
-                      <th style={{ textAlign: 'center' }}>Payslip</th>
+                      <th style={{ textAlign: 'center' }}>Slip</th>
                     </tr>
                   </thead>
                   <tbody>
                     {payrollLoading ? <tr><td colSpan="10" className="rv-empty">Calculating totals...</td></tr> : payrollData.length === 0 ? <tr><td colSpan="10" className="rv-empty">No data for this date range.</td></tr> : (
                       payrollData.map((d) => (
-                        <tr key={d.sap_id}>
+                        <tr key={d.sap_id} className="rv-click" onClick={() => openPayslip(d)}>
+                          <td>{d.sap_id}</td>
                           <td><div className="rv-driver-cell"><strong>{d.full_name}</strong>{editButton(d, d.plate_number)}</div></td>
-                          <td>{d.sap_id}</td><td>{d.team}</td><td>{d.plate_number}</td>
                           <td className="num"><strong>{d.days_worked}</strong></td>
-                          <td className="num">{d.total_km.toFixed(1)} km</td>
                           <td className="num">{peso(d.total_earnings)}</td>
+                          <td className="num">{peso(d.basic)}</td>
+                          <td className="num">{peso(d.basic_ca)}</td>
+                          <td className="num"><strong>{peso(d.total_basic)}</strong></td>
                           <td className="num" style={{ color: 'var(--red)' }}>-{peso(d.total_deductions)}</td>
                           <td className="num"><strong className="text-green">{peso(d.net_pay)}</strong></td>
                           <td style={{ textAlign: 'center' }}>
-                            <button onClick={() => openPayslip(d)} className="rv-edit-btn" style={{ display: 'inline-grid' }} title="View Payslip"><Printer size={14} /></button>
+                            <button onClick={(e) => { e.stopPropagation(); openPayslip(d); }} className="rv-edit-btn" style={{ display: 'inline-grid' }} title="View Payslip"><Printer size={14} /></button>
                           </td>
                         </tr>
                       ))
@@ -800,6 +1238,159 @@ export default function Dashboard({ session }) {
                 </table>
               </div>
             </section>
+          )}
+
+          {/* ===================== INCENTIVES (admin) ===================== */}
+          {activeTab === 'incentives' && isAdmin && (
+            <>
+              <section className="rv-card">
+                <div className="rv-panel-head">
+                  <div>
+                    <h3><Gift size={18} /> Incentives</h3>
+                    <p className="rv-sub">{incWeekRange} · Released every Tuesday{incReleaseDate ? ` (${incReleaseDate})` : ''}</p>
+                  </div>
+                  <button onClick={handleExportIncentives} className="rv-pill-btn primary"><Download size={16} /> Export</button>
+                </div>
+
+                <div className="rv-payroll-controls">
+                  <div className="rv-select">
+                    <span className="rv-sub" style={{ margin: 0 }}>Week (Mon-Sun)</span>
+                    <select value={incWeek} onChange={(e) => setIncWeek(e.target.value)} disabled={weekOptions.length === 0}>
+                      {weekOptions.length === 0 && <option value="">No data yet</option>}
+                      {weekOptions.map((w) => <option key={w} value={w}>{formatDate(w)} - {formatDate(addDays(w, 6))}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="rv-chips">
+                  <div className="rv-chip hl"><span>Total cash incentives</span><strong>{peso(incentiveTotals.cash)}</strong></div>
+                  <div className="rv-chip"><span>Individual</span><strong>{peso(incentiveTotals.individual)}</strong></div>
+                  <div className="rv-chip"><span>Captain bonus</span><strong>{peso(incentiveTotals.captain)}</strong></div>
+                  <div className="rv-chip"><span>Rice</span><strong>{incentiveTotals.rice} kg</strong></div>
+                </div>
+
+                <p className="rv-note">
+                  <b>Individual</b> (per day): {IND_TIERS.map((t) => `₱${t.min.toLocaleString()}+ = ${t.rate * 100}%`).join(', ')}.{' '}
+                  <b>Captain</b>: ₱{CAPTAIN_PER_MEMBER_DAY} per group member that has a record that day (10 members = ₱100/day, max ₱{CAPTAIN_WEEK_CAP}/week).{' '}
+                  <b>Rice</b>: group members' combined earnings reach ₱{RICE_GROUP_TARGET.toLocaleString()} for the week → captain {RICE_CAPTAIN_KG} kg, members {RICE_MEMBER_KG} kg.
+                </p>
+              </section>
+
+              {/* ---- Group setup ---- */}
+              <section className="rv-card">
+                <div className="rv-panel-head">
+                  <h3><Users size={18} /> {groupForm.id ? 'Edit group' : 'New group'}</h3>
+                  {groupForm.id && <button type="button" onClick={() => setGroupForm(EMPTY_GROUP)} className="rv-link-danger">Cancel edit</button>}
+                </div>
+                <form onSubmit={handleSaveGroup} className="rv-group-form">
+                  <label className="rv-field"><span>Group name</span>
+                    <input type="text" placeholder="e.g. Group 1" value={groupForm.name} onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })} required />
+                  </label>
+                  <label className="rv-field"><span>Team captain</span>
+                    <select className="rv-input-select" value={groupForm.captain} onChange={(e) => setGroupForm({ ...groupForm, captain: e.target.value, members: groupForm.members.filter((m) => m !== e.target.value) })} required>
+                      <option value="">Select captain…</option>
+                      {combinedDirectory.map((d) => <option key={d.sap_id} value={String(d.sap_id)}>{d.sap_id} · {d.full_name}</option>)}
+                    </select>
+                  </label>
+                  <div className="rv-field rv-members">
+                    <span>Members ({groupForm.members.length}/{MAX_MEMBERS})</span>
+                    <input type="search" placeholder="Search drivers to add…" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} />
+                    {groupForm.members.length > 0 && (
+                      <div className="rv-sel-chips">
+                        {groupForm.members.map((m) => (
+                          <button type="button" key={m} className="rv-sel-chip" onClick={() => toggleMember(m)} title="Remove">
+                            {dirMap.get(m)?.full_name || m} <X size={12} />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="rv-member-list">
+                      {memberChoices.length === 0 ? <p className="rv-empty" style={{ padding: 12 }}>No drivers found.</p> : memberChoices.map((d) => {
+                        const id = String(d.sap_id);
+                        return (
+                          <label key={id} className={`rv-member-row ${groupForm.members.includes(id) ? 'on' : ''}`}>
+                            <input type="checkbox" checked={groupForm.members.includes(id)} onChange={() => toggleMember(id)} />
+                            <span>{d.full_name}</span><small>SAP {id}</small>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <button type="submit" className="rv-pill-btn primary rv-form-submit" disabled={savingGroup}>
+                    {savingGroup ? 'Saving...' : groupForm.id ? 'Update group' : <><Plus size={16} /> Add group</>}
+                  </button>
+                </form>
+              </section>
+
+              {/* ---- Group results ---- */}
+              {groupCards.length > 0 && (
+                <section className="rv-card">
+                  <div className="rv-panel-head"><div><h3>Groups this week</h3><p className="rv-sub">Captain bonus follows who has a record each day · rice target {peso(RICE_GROUP_TARGET, 0)}</p></div></div>
+                  <div className="rv-group-grid">
+                    {groupCards.map((g) => (
+                      <div key={g.id} className={`rv-group ${g.riceOk ? 'ok' : ''}`}>
+                        <div className="rv-group-top">
+                          <strong>{g.name}</strong>
+                          <span>{g.riceOk ? 'Rice qualified' : 'Rice not yet'}</span>
+                        </div>
+                        <small>Captain: <b>{g.captainName}</b> · {g.members.length} members</small>
+                        <div className="rv-days">
+                          {weekDays.map((day, i) => (
+                            <div key={day} className="rv-day">
+                              <small>{weekdayShort(day)}</small>
+                              <b>{g.perDay[i]}</b>
+                              <small>{peso(g.perDay[i] * CAPTAIN_PER_MEMBER_DAY, 0)}</small>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="rv-group-top"><small>Captain bonus</small><strong>{peso(g.bonus)}</strong></div>
+                        <div className="rv-progress"><i style={{ width: `${Math.min(100, (g.total / RICE_GROUP_TARGET) * 100)}%` }} /></div>
+                        <small>{peso(g.total, 0)} of {peso(RICE_GROUP_TARGET, 0)}</small>
+                        <div className="rv-group-actions">
+                          <button type="button" className="rv-edit-btn" onClick={() => handleEditGroup(g.raw)} title="Edit group"><Edit size={14} /></button>
+                          <button type="button" className="rv-edit-btn danger" onClick={() => handleDeleteGroup(g.raw)} title="Delete group"><Trash2 size={14} /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {groupCards.length === 0 && (
+                <section className="rv-card"><p className="rv-empty">No groups yet. Add a captain and members above to start the group incentives.</p></section>
+              )}
+
+              {/* ---- Per-driver table ---- */}
+              <section className="rv-card rv-table-card">
+                <div className="rv-table-scroll">
+                  <table className="rv-table">
+                    <thead>
+                      <tr>
+                        <th>SAP ID</th><th>Name</th><th>Group</th>
+                        <th className="num">Week Earnings</th><th className="num">Individual</th>
+                        <th className="num">Captain</th><th className="num">Rice</th><th className="num">Cash Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {incLoading ? <tr><td colSpan="8" className="rv-empty">Calculating...</td></tr> : incentiveRows.length === 0 ? <tr><td colSpan="8" className="rv-empty">No data for this week.</td></tr> : (
+                        incentiveRows.map((r) => (
+                          <tr key={r.sap_id}>
+                            <td>{r.sap_id}</td>
+                            <td><div className="rv-driver-cell"><strong>{r.full_name}</strong>{r.role === 'Captain' && <span className="rv-badge hp">Captain</span>}</div></td>
+                            <td>{r.group_name || '-'}</td>
+                            <td className="num">{peso(r.week_earnings)}</td>
+                            <td className="num">{r.individual ? peso(r.individual) : '-'}</td>
+                            <td className="num">{r.captain_bonus ? peso(r.captain_bonus) : '-'}</td>
+                            <td className="num">{r.rice_kg ? `${r.rice_kg} kg` : '-'}</td>
+                            <td className="num"><strong className="text-green">{peso(r.total_cash)}</strong></td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </>
           )}
 
           {/* ===================== DRIVERS (admin) ===================== */}
@@ -815,7 +1406,7 @@ export default function Dashboard({ session }) {
                   <label className="rv-field wide"><span>Full name</span><input type="text" placeholder="Full name" value={newDriver.full_name} onChange={(e) => setNewDriver({ ...newDriver, full_name: e.target.value })} required /></label>
                   <label className="rv-field"><span>Phone number</span><input type="text" placeholder="09xx xxx xxxx" value={newDriver.phone} onChange={(e) => setNewDriver({ ...newDriver, phone: e.target.value })} /></label>
                   <label className="rv-field"><span>Plate number</span><input type="text" placeholder="ABC 1234" value={newDriver.vehicle_plate} onChange={(e) => setNewDriver({ ...newDriver, vehicle_plate: e.target.value })} /></label>
-                  <label className="rv-field"><span>Cash Advance (₱)</span><input type="number" placeholder="0.00" value={newDriver.cash_advance} onChange={(e) => setNewDriver({ ...newDriver, cash_advance: e.target.value })} /></label>
+                  <label className="rv-field"><span>CA partial payment (₱)</span><input type="number" placeholder="0.00" value={newDriver.cash_advance} onChange={(e) => setNewDriver({ ...newDriver, cash_advance: e.target.value })} /></label>
                   <label className="rv-field"><span>Coop Share (₱)</span><input type="number" placeholder="0.00" value={newDriver.coop_share} onChange={(e) => setNewDriver({ ...newDriver, coop_share: e.target.value })} /></label>
                   <label className="rv-field"><span>Other Deductions (₱)</span><input type="number" placeholder="0.00" value={newDriver.other_deductions} onChange={(e) => setNewDriver({ ...newDriver, other_deductions: e.target.value })} /></label>
                   <button type="submit" className="rv-pill-btn primary rv-form-submit" disabled={addingDriver}>{addingDriver ? 'Saving...' : (editingSapId ? 'Update Driver' : 'Add Driver')}</button>
@@ -824,10 +1415,10 @@ export default function Dashboard({ session }) {
 
               <section className="rv-card">
                 <div className="rv-panel-head">
-                  <div><h3>Registered Drivers</h3><p className="rv-sub">{filteredDirectory.length} of {directory.length} drivers</p></div>
+                  <div><h3>Registered Drivers</h3><p className="rv-sub">{filteredDirectory.length} of {combinedDirectory.length} drivers</p></div>
                   <input type="search" className="rv-search" placeholder="Search name, SAP ID or plate…" value={dirSearch} onChange={(e) => setDirSearch(e.target.value)} />
                 </div>
-                {filteredDirectory.length === 0 ? <p className="rv-empty">{directory.length === 0 ? 'No drivers registered yet.' : 'No drivers match your search.'}</p> : (
+                {filteredDirectory.length === 0 ? <p className="rv-empty">{combinedDirectory.length === 0 ? 'No drivers registered yet.' : 'No drivers match your search.'}</p> : (
                   <div className="rv-dir-grid">
                     {filteredDirectory.map((d) => (
                       <div key={d.sap_id} className={`rv-dir-item ${editingSapId === d.sap_id ? 'editing' : ''}`}>
@@ -849,9 +1440,9 @@ export default function Dashboard({ session }) {
 
               <section className="rv-card rv-danger-zone">
                 <div className="rv-panel-head">
-                  <div><h3><Trash2 size={18} /> Danger zone</h3><p className="rv-sub">Permanently delete every uploaded record. This cannot be undone.</p></div>
+                  <div><h3><Trash2 size={18} /> Danger zone</h3><p className="rv-sub">Permanently delete every uploaded record and the brackets set on them. This cannot be undone.</p></div>
                 </div>
-                <label className="rv-check"><input type="checkbox" checked={wipeDirectory} onChange={(e) => setWipeDirectory(e.target.checked)} /><span>Also delete the driver directory ({directory.length} drivers)</span></label>
+                <label className="rv-check"><input type="checkbox" checked={wipeDirectory} onChange={(e) => setWipeDirectory(e.target.checked)} /><span>Also delete the driver directory ({combinedDirectory.length} drivers)</span></label>
                 <div className="rv-danger-row">
                   <label className="rv-field"><span>Type {CONFIRM_PHRASE} to confirm</span><input type="text" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} placeholder={CONFIRM_PHRASE} autoComplete="off" /></label>
                   <button type="button" className="rv-pill-btn rv-danger-btn" onClick={handleDeleteAll} disabled={deletingAll || confirmText.trim().toUpperCase() !== CONFIRM_PHRASE}><Trash2 size={16} /> {deletingAll ? 'Deleting...' : 'Delete all data'}</button>
@@ -873,6 +1464,7 @@ export default function Dashboard({ session }) {
 
             <div className="rv-modal-body" id="print-area">
               <div className="rv-payslip-header">
+                <p><strong>NEMINTSCO - GSM</strong></p>
                 <h3>{payslipDriver.full_name}</h3>
                 <p>SAP ID: {payslipDriver.sap_id} · Plate: {payslipDriver.plate_number}</p>
                 <p><strong>Period:</strong> {dateRangeString}</p>
@@ -881,28 +1473,47 @@ export default function Dashboard({ session }) {
 
               <table className="rv-table" style={{ fontSize: '12px', marginTop: '20px' }}>
                 <thead>
-                  <tr><th>Date</th><th className="num">Orders</th><th className="num">Distance</th><th className="num">Daily Earnings</th></tr>
+                  <tr>
+                    <th>Date</th><th className="num">Total Earnings</th><th>Bracket</th>
+                    <th className="num">Basic Rate</th><th className="num">Charge to CA</th><th className="num">Total Pay</th>
+                  </tr>
                 </thead>
                 <tbody>
-                  {payslipDriver.dailyRecords.map((rec) => (
-                    <tr key={rec.order_date}>
-                      <td>{formatDate(rec.order_date)}</td>
-                      <td className="num">{rec.orders_count}</td>
-                      <td className="num">{Number(rec.distance).toFixed(1)} km</td>
-                      <td className="num">{peso(rec.total_pay)}</td>
-                    </tr>
+                  {payslipDriver.weeks.map((wk) => (
+                    <Fragment key={wk.start}>
+                      {wk.rows.map((r) => (
+                        <tr key={r.date}>
+                          <td>{formatDate(r.date)}</td>
+                          <td className="num">{peso(r.earnings)}</td>
+                          <td>{bracketLabel(r.bracket)}</td>
+                          <td className="num">{r.total ? peso(r.basic) : '-'}</td>
+                          <td className="num">{r.ca ? peso(r.ca) : '-'}</td>
+                          <td className="num">{r.total ? peso(r.total) : '-'}</td>
+                        </tr>
+                      ))}
+                      <tr className="rv-week-row">
+                        <td>Week {shortDate(wk.start)} - {shortDate(addDays(wk.start, 6))}</td>
+                        <td className="num">{peso(wk.earnings)}</td>
+                        <td />
+                        <td className="num">{peso(wk.basic)}</td>
+                        <td className="num">{peso(wk.ca)}</td>
+                        <td className="num">{peso(wk.total)}</td>
+                      </tr>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
 
               <div className="rv-payslip-summary">
-                <div className="rv-payslip-row">
-                  <span>Gross Earnings ({payslipDriver.days_worked} days)</span>
-                  <strong>{peso(payslipDriver.total_earnings)}</strong>
-                </div>
+                <div className="rv-payslip-row"><span>Days with basic pay</span><strong>{payslipDriver.days_worked}</strong></div>
+                <div className="rv-payslip-row"><span>Total earnings</span><strong>{peso(payslipDriver.total_earnings)}</strong></div>
+                <div className="rv-payslip-row"><span>Basic</span><strong>{peso(payslipDriver.basic)}</strong></div>
+                <div className="rv-payslip-row"><span>Basic CA</span><strong>{peso(payslipDriver.basic_ca)}</strong></div>
+                <div className="rv-payslip-row" style={{ fontWeight: 'bold' }}><span>Total Pay</span><strong>{peso(payslipDriver.total_basic)}</strong></div>
 
                 <div style={{ borderTop: '1px solid #e5e7eb', margin: '10px 0', paddingTop: '10px' }}>
-                  <div className="rv-payslip-row"><span>Cash Advance</span><strong>-{peso(payslipDriver.cash_advance)}</strong></div>
+                  <div className="rv-payslip-row"><span>Previous period CA{prevRangeString ? ` (${prevRangeString})` : ''}</span><strong>-{peso(payslipDriver.prev_ca)}</strong></div>
+                  <div className="rv-payslip-row"><span>CA partial payment (older balance)</span><strong>-{peso(payslipDriver.partial_ca)}</strong></div>
                   <div className="rv-payslip-row"><span>Coop Share</span><strong>-{peso(payslipDriver.coop_share)}</strong></div>
                   <div className="rv-payslip-row"><span>Other Deductions</span><strong>-{peso(payslipDriver.other_deductions)}</strong></div>
                 </div>
