@@ -19,8 +19,7 @@ const shortDate = (dateStr) =>
 const weekdayShort = (dateStr) =>
   new Date(dateStr + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'short' });
 
-// ============ BASIC PAY BRACKETS (you pick the bracket per driver per day) ============
-// Same table as the "Basic Pay Computation" sheet. Nothing is applied automatically.
+// ============ BASIC PAY BRACKETS ============
 const BRACKETS = [
   { key: '2200', label: '2,200 and up', basic: 500, ca: 0 },
   { key: '2100', label: '2,100', basic: 400, ca: 100 },
@@ -32,7 +31,6 @@ const BRACKETS = [
 const bracketLabel = (key) =>
   key === 'custom' ? 'Custom' : (!key || key === 'none') ? '—' : (BRACKETS.find((b) => b.key === key)?.label || key);
 
-// Only a hint shown next to an unassigned day. It never changes any value.
 const suggestBracket = (earnings) => {
   const e = Number(earnings) || 0;
   if (e >= 2200) return '2200';
@@ -40,16 +38,16 @@ const suggestBracket = (earnings) => {
   return null;
 };
 
-// ============ INCENTIVE RULES (edit these numbers if the policy changes) ============
-const IND_TIERS = [                    // Individual: per day, on that day's earnings
+// ============ INCENTIVE RULES ============
+const IND_TIERS = [
   { min: 4000, rate: 0.10 },
   { min: 2500, rate: 0.05 },
 ];
-const RICE_GROUP_TARGET = 150000;      // group of 10 × ₱2,500 × 6 days
+const RICE_GROUP_TARGET = 150000;
 const RICE_CAPTAIN_KG = 10;
 const RICE_MEMBER_KG = 5;
-const CAPTAIN_PER_MEMBER_DAY = 10;     // ₱10 per member that has a record that day (10 members = ₱100/day)
-const CAPTAIN_WEEK_CAP = 600;          // 6 days × ₱100
+const CAPTAIN_PER_MEMBER_DAY = 10;
+const CAPTAIN_WEEK_CAP = 600;
 const MAX_MEMBERS = 10;
 
 const individualRate = (earnings) => {
@@ -65,7 +63,6 @@ const toISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, 
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return toISO(d); };
 const mondayOf = (s) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return toISO(d); };
 
-// Period right before the selected one (its CA charges are deducted in full on this payroll)
 const getPrevPeriod = (start, end) => {
   if (!start || !end) return null;
   const s = new Date(start + 'T00:00:00');
@@ -77,8 +74,8 @@ const getPrevPeriod = (start, end) => {
 };
 
 const STATUS_FILTERS = ['All', 'HP', 'MP', 'LP', 'Zombie'];
-const DAILY_EXPORT_START = '2026-10-28'; // the Daily Breakdown export starts from this date
-const EMPTY_DRIVER = { sap_id: '', full_name: '', phone: '', vehicle_plate: '', cash_advance: 0, coop_share: 0, other_deductions: 0 };
+const DAILY_EXPORT_START = '2026-10-28';
+const EMPTY_DRIVER = { sap_id: '', full_name: '', phone: '', vehicle_plate: '', cash_advance: 0, coop_share: 0, other_deductions: 0, sss: 0, pagibig: 0, philhealth: 0, sss_loan: 0, pagibig_loan: 0 };
 const EMPTY_GROUP = { id: null, name: '', captain: '', members: [] };
 
 export default function Dashboard({ session }) {
@@ -86,21 +83,21 @@ export default function Dashboard({ session }) {
   const [rawPayrollDrivers, setPayrollDrivers] = useState([]);
   const [rawIncDrivers, setIncDrivers] = useState([]);
   const [directory, setDirectory] = useState([]);
-  const [brackets, setBrackets] = useState({}); // key `${sap_id}__${order_date}` -> row
+  const [brackets, setBrackets] = useState({});
   const [groups, setGroups] = useState([]);
-  const [bracketsReady, setBracketsReady] = useState(''); // date whose saved brackets have finished loading
-  const [breakdownSap, setBreakdownSap] = useState(null); // driver opened in the day-by-day breakdown
-  const [breakdownOrders, setBreakdownOrders] = useState({}); // order_date -> orders of that driver
+  const [bracketsReady, setBracketsReady] = useState('');
+  const [breakdownSap, setBreakdownSap] = useState(null);
+  const [breakdownOrders, setBreakdownOrders] = useState({});
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState('');
-  const [collapsedDays, setCollapsedDays] = useState(new Set()); // days whose orders are hidden
-  const [openOrders, setOpenOrders] = useState(new Set());       // orders showing all CSV fields
+  const [collapsedDays, setCollapsedDays] = useState(new Set());
+  const [openOrders, setOpenOrders] = useState(new Set());
 
   const [availableDates, setAvailableDates] = useState([]);
   const [selectedDate, setSelectedDate] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [incWeek, setIncWeek] = useState(''); // Monday of the incentive week
+  const [incWeek, setIncWeek] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [payrollLoading, setPayrollLoading] = useState(false);
@@ -144,7 +141,6 @@ export default function Dashboard({ session }) {
   const activeTab = TABS.some((t) => t.id === tab) ? tab : 'overview';
 
   const dirMap = useMemo(() => new Map(directory.map((d) => [String(d.sap_id).trim(), d])), [directory]);
-  // directory + drivers that only exist in uploaded data (so they can be picked as captain/members)
   const combinedDirectory = useMemo(() => {
     const list = [...directory];
     const seen = new Set(list.map((d) => String(d.sap_id).trim()));
@@ -154,7 +150,7 @@ export default function Dashboard({ session }) {
         seen.add(id);
         list.push({
           sap_id: d.sap_id, full_name: d.full_name || 'Unknown Driver', vehicle_plate: d.vehicle_plate || '',
-          phone: d.phone || '', cash_advance: 0, coop_share: 0, other_deductions: 0,
+          phone: d.phone || '', cash_advance: 0, coop_share: 0, other_deductions: 0, sss: 0, pagibig: 0, philhealth: 0, sss_loan: 0, pagibig_loan: 0,
         });
       }
     });
@@ -173,6 +169,11 @@ export default function Dashboard({ session }) {
         cash_advance: e.cash_advance || 0,
         coop_share: e.coop_share || 0,
         other_deductions: e.other_deductions || 0,
+        sss: e.sss || 0,
+        pagibig: e.pagibig || 0,
+        philhealth: e.philhealth || 0,
+        sss_loan: e.sss_loan || 0,
+        pagibig_loan: e.pagibig_loan || 0,
       };
     });
   const drivers = useMemo(() => withDirectory(rawDrivers), [rawDrivers, dirMap]);
@@ -190,7 +191,6 @@ export default function Dashboard({ session }) {
     if (!error && data) setGroups(data);
   };
 
-  // brackets for a date range (paged, so more than 1000 rows still load)
   const fetchBrackets = async (start, end) => {
     if (!start || !end) return {};
     let all = [];
@@ -209,9 +209,6 @@ export default function Dashboard({ session }) {
     return fetched;
   };
 
-  // Gives every driver-day without a bracket the one that matches its earnings (same table as the
-  // Daily Breakdown dropdown), so each day's basic pay is counted without opening every date first.
-  // Brackets you already saved are never touched, and PAID periods are skipped.
   const autoFillBrackets = async (statRows, saved) => {
     const toSave = [];
     statRows.forEach((d) => {
@@ -298,7 +295,6 @@ export default function Dashboard({ session }) {
   useEffect(() => { if (isAdmin && startDate && endDate) fetchPayrollDrivers(startDate, endDate); }, [startDate, endDate, isAdmin]);
   useEffect(() => { if (isAdmin && incWeek) fetchIncDrivers(incWeek); }, [incWeek, isAdmin]);
 
-  // every order of the opened driver inside the payroll period
   useEffect(() => {
     setCollapsedDays(new Set());
     setOpenOrders(new Set());
@@ -362,8 +358,6 @@ export default function Dashboard({ session }) {
   };
 
   // ============ AUTO-ASSIGN BRACKETS ============
-  // Fills only days that have no saved bracket, and only AFTER the saved brackets for
-  // that date finished loading, so your manual changes are never overwritten.
   useEffect(() => {
     if (!isAdmin || !drivers.length || bracketsReady !== selectedDate) return;
     drivers.forEach((d) => {
@@ -396,6 +390,11 @@ export default function Dashboard({ session }) {
       cash_advance: Number(newDriver.cash_advance) || 0,
       coop_share: Number(newDriver.coop_share) || 0,
       other_deductions: Number(newDriver.other_deductions) || 0,
+      sss: Number(newDriver.sss) || 0,
+      pagibig: Number(newDriver.pagibig) || 0,
+      philhealth: Number(newDriver.philhealth) || 0,
+      sss_loan: Number(newDriver.sss_loan) || 0,
+      pagibig_loan: Number(newDriver.pagibig_loan) || 0,
     }], { onConflict: 'sap_id' });
 
     if (res.error) {
@@ -413,15 +412,20 @@ export default function Dashboard({ session }) {
   };
 
   const handleEditClick = (sapId, existingName = '', existingPlate = '') => {
-    const dirEntry = directory.find((d) => d.sap_id === sapId);
+    const dirEntry = directory.find((d) => d.sap_id === sapId) || {};
     setNewDriver({
       sap_id: sapId,
-      full_name: dirEntry ? dirEntry.full_name : (existingName === 'Unknown Driver' ? '' : existingName),
-      phone: dirEntry ? (dirEntry.phone || '') : '',
-      vehicle_plate: dirEntry ? (dirEntry.vehicle_plate || '') : existingPlate,
-      cash_advance: dirEntry ? (dirEntry.cash_advance || 0) : 0,
-      coop_share: dirEntry ? (dirEntry.coop_share || 0) : 0,
-      other_deductions: dirEntry ? (dirEntry.other_deductions || 0) : 0,
+      full_name: dirEntry.full_name || (existingName === 'Unknown Driver' ? '' : existingName),
+      phone: dirEntry.phone || '',
+      vehicle_plate: dirEntry.vehicle_plate || existingPlate,
+      cash_advance: dirEntry.cash_advance || 0,
+      coop_share: dirEntry.coop_share || 0,
+      other_deductions: dirEntry.other_deductions || 0,
+      sss: dirEntry.sss || 0,
+      pagibig: dirEntry.pagibig || 0,
+      philhealth: dirEntry.philhealth || 0,
+      sss_loan: dirEntry.sss_loan || 0,
+      pagibig_loan: dirEntry.pagibig_loan || 0,
     });
     setEditingSapId(sapId);
     setTab('drivers');
@@ -437,7 +441,7 @@ export default function Dashboard({ session }) {
     else await fetchDirectory();
   };
 
-  // ============ INCENTIVE GROUPS (manual) ============
+  // ============ INCENTIVE GROUPS ============
   const toggleMember = (sapId) => {
     setGroupForm((f) => {
       if (f.members.includes(sapId)) return { ...f, members: f.members.filter((m) => m !== sapId) };
@@ -519,7 +523,6 @@ export default function Dashboard({ session }) {
     return 'HP';
   };
 
-  // replace the stored orders of every driver/date that was just uploaded
   const replaceOrders = async (records, orderRows) => {
     try {
       const byDate = {};
@@ -604,7 +607,6 @@ export default function Dashboard({ session }) {
           grouped[key].total_pay += pay;
           grouped[key].orders_count += 1;
 
-          // keep each order too, so the driver breakdown can list them
           const refKey = Object.keys(cleanRow).find((k) => /order.*(id|no|number|num|#)|^order$|(tracking|delivery|waybill|task|job).*(id|no|number)/i.test(k));
           seqMap[key] = (seqMap[key] || 0) + 1;
           orderRows.push({
@@ -692,11 +694,9 @@ export default function Dashboard({ session }) {
     };
   }, [drivers]);
 
-  // ============ PAYROLL (sums the brackets you set) ============
+  // ============ PAYROLL ============
   const prevPeriod = getPrevPeriod(startDate, endDate);
 
-  // The bracket used for a driver-day: the saved one, or else the one that matches that day's earnings.
-  // This way every day's basic pay shows and counts right away, even before the bracket is saved.
   const bracketFor = (sapId, date, earnings) => {
     const saved = brackets[`${sapId}__${date}`];
     if (saved) return saved;
@@ -720,6 +720,11 @@ export default function Dashboard({ session }) {
           partial_ca: Number(d.cash_advance ?? dir.cash_advance ?? 0),
           coop_share: Number(d.coop_share ?? dir.coop_share ?? 0),
           other_deductions: Number(d.other_deductions ?? dir.other_deductions ?? 0),
+          sss: Number(d.sss ?? dir.sss ?? 0),
+          pagibig: Number(d.pagibig ?? dir.pagibig ?? 0),
+          philhealth: Number(d.philhealth ?? dir.philhealth ?? 0),
+          sss_loan: Number(d.sss_loan ?? dir.sss_loan ?? 0),
+          pagibig_loan: Number(d.pagibig_loan ?? dir.pagibig_loan ?? 0),
         };
       }
       return rows[sapId];
@@ -732,7 +737,7 @@ export default function Dashboard({ session }) {
       if (b) {
         r.basic += Number(b.basic_rate || 0);
         r.basic_ca += Number(b.charge_ca || 0);
-        r.total_basic += Number(b.total_pay || 0);
+        r.total_basic += Number(b.basic_rate || 0); // EXCLUDED Allowable CA from final pay
         if (Number(b.total_pay) > 0) r.days_worked += 1;
       }
       if (d.vehicle_plate) r.plate_number = d.vehicle_plate;
@@ -747,7 +752,7 @@ export default function Dashboard({ session }) {
     }
 
     return Object.values(rows).map((r) => {
-      const deductions = r.prev_ca + r.partial_ca + r.coop_share + r.other_deductions;
+      const deductions = r.prev_ca + r.partial_ca + r.coop_share + r.other_deductions + r.sss + r.pagibig + r.philhealth + r.sss_loan + r.pagibig_loan;
       return {
         ...r,
         total_earnings: round2(r.total_earnings), basic: round2(r.basic), basic_ca: round2(r.basic_ca),
@@ -773,7 +778,7 @@ export default function Dashboard({ session }) {
   const dateRangeString = startDate && endDate ? `${formatDate(startDate)} - ${formatDate(endDate)}` : 'Select Dates';
   const prevRangeString = prevPeriod ? `${formatDate(prevPeriod[0])} - ${formatDate(prevPeriod[1])}` : '';
 
-  // ============ INCENTIVES (Mon-Sun, released every Tuesday) ============
+  // ============ INCENTIVES ============
   const weekOptions = useMemo(
     () => [...new Set(availableDates.map(mondayOf))].sort().reverse(),
     [availableDates]
@@ -868,17 +873,169 @@ export default function Dashboard({ session }) {
       '#DAYS': d.days_worked,
       'Total Earnings': d.total_earnings.toFixed(2),
       'BASIC': d.basic.toFixed(2),
-      'BASIC CA': d.basic_ca.toFixed(2),
+      'ALLOWABLE CA': d.basic_ca.toFixed(2),
       'TOTAL': d.total_basic.toFixed(2),
       'Prev Period CA': d.prev_ca.toFixed(2),
       'CA Partial Payment': d.partial_ca.toFixed(2),
       'Coop Share': d.coop_share.toFixed(2),
+      'SSS': d.sss.toFixed(2),
+      'Pag-Ibig': d.pagibig.toFixed(2),
+      'Philhealth': d.philhealth.toFixed(2),
+      'SSS Loan': d.sss_loan.toFixed(2),
+      'Pag-Ibig Loan': d.pagibig_loan.toFixed(2),
       'Other Deductions': d.other_deductions.toFixed(2),
       'Total Deductions': d.total_deductions.toFixed(2),
       'Net Pay': d.net_pay.toFixed(2),
       'Date Range': dateRangeString,
       'Status': periodStatus,
     })), `Payroll_${periodStatus}_${startDate}_to_${endDate}.csv`);
+  };
+
+  const handleExportPayslipsCSV = () => {
+    if (!isAdmin) return;
+    if (payrollData.length === 0) return alert('No data to export.');
+
+    const rows = payrollData.map((d) => {
+      return {
+        'SAP ID': d.sap_id,
+        'Driver Name': d.full_name,
+        'Plate': d.plate_number,
+        'Period': dateRangeString,
+        'Status': periodStatus,
+        'Days with Basic Pay': d.days_worked,
+        'Total Earnings': d.total_earnings.toFixed(2),
+        'Basic': d.basic.toFixed(2),
+        'Allowable CA': d.basic_ca.toFixed(2),
+        'Total Pay': d.total_basic.toFixed(2),
+        'Prev Period CA': d.prev_ca.toFixed(2),
+        'CA Partial Payment': d.partial_ca.toFixed(2),
+        'Coop Share': d.coop_share.toFixed(2),
+        'SSS': d.sss.toFixed(2),
+        'Pag-Ibig': d.pagibig.toFixed(2),
+        'Philhealth': d.philhealth.toFixed(2),
+        'SSS Loan': d.sss_loan.toFixed(2),
+        'Pag-Ibig Loan': d.pagibig_loan.toFixed(2),
+        'Other Deductions': d.other_deductions.toFixed(2),
+        'Total Deductions': d.total_deductions.toFixed(2),
+        'Net Pay': d.net_pay.toFixed(2),
+      };
+    });
+
+    downloadCSV(rows, `Payslips_${periodStatus}_${startDate}_to_${endDate}.csv`);
+  };
+
+  const printAllPayslips = () => {
+    if (!isAdmin) return;
+    if (payrollData.length === 0) return alert('No data to print.');
+
+    const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const money = (n) => `₱${Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    const pages = payrollData.map((d) => {
+      const recs = payrollDrivers
+        .filter((r) => r.sap_id === d.sap_id)
+        .sort((a, b) => a.order_date.localeCompare(b.order_date));
+        
+      const dayRows = recs.map((rec) => {
+        const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
+        const rowTotal = Number(b?.basic_rate || 0); // CA EXCLUDED
+        return `<tr>
+          <td>${esc(formatDate(rec.order_date))}</td>
+          <td class="num">${money(rec.total_pay)}</td>
+          <td>${esc(bracketLabel(b?.bracket || 'none'))}</td>
+          <td class="num">${b?.total_pay ? money(b.basic_rate) : '-'}</td>
+          <td class="num">${b?.total_pay ? money(b.charge_ca) : '-'}</td>
+          <td class="num">${b?.total_pay ? money(rowTotal) : '-'}</td>
+        </tr>`;
+      }).join('');
+
+      return `<section class="slip">
+        <h2 style="text-align:left; margin-bottom: 2px; color: #333; font-size: 13px;">NEMINTSCO - GSM</h2>
+        <h1 style="text-align:left; font-size: 20px; margin: 0 0 4px 0; text-transform: uppercase;">${esc(d.full_name)}</h1>
+        <p style="font-size: 12px; margin: 0 0 2px 0;">SAP ID: ${esc(d.sap_id)} · Plate: ${esc(d.plate_number)}</p>
+        <p style="font-size: 12px; margin: 0 0 20px 0;"><b>Period:</b> ${esc(dateRangeString)} · <b>Status:</b> ${esc(periodStatus)}</p>
+        
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 20%;">Date</th>
+              <th class="num" style="width: 16%;">Earnings</th>
+              <th style="width: 16%;">Bracket</th>
+              <th class="num" style="width: 16%;">Basic</th>
+              <th class="num" style="width: 16%;">Allowable CA</th>
+              <th class="num" style="width: 16%;">Pay</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dayRows}
+          </tbody>
+        </table>
+
+        <div class="totals-list">
+          <div><span>Days with basic pay</span><b>${d.days_worked}</b></div>
+          <div><span>Total earnings</span><b>${money(d.total_earnings)}</b></div>
+          <div><span>Basic</span><b>${money(d.basic)}</b></div>
+          <div><span>Allowable CA</span><b>${money(d.basic_ca)}</b></div>
+          <div><span>Total Pay</span><b>${money(d.total_basic)}</b></div>
+        </div>
+
+        <h3 style="margin-top: 20px; font-size: 13px; font-weight: bold; margin-bottom: 8px;">Adjustments:</h3>
+        <p style="min-height: 20px; font-size: 12px; color: #555;"> </p>
+
+        <h3 style="margin-top: 20px; font-size: 13px; font-weight: bold; margin-bottom: 8px;">Deductions:</h3>
+        <div class="totals-list">
+          <div><span>Cash Balance</span><b>-${money(d.prev_ca + d.partial_ca)}</b></div>
+          ${d.sss > 0 ? `<div><span>SSS</span><b>-${money(d.sss)}</b></div>` : ''}
+          ${d.pagibig > 0 ? `<div><span>Pag-Ibig</span><b>-${money(d.pagibig)}</b></div>` : ''}
+          ${d.philhealth > 0 ? `<div><span>Philhealth</span><b>-${money(d.philhealth)}</b></div>` : ''}
+          ${d.sss_loan > 0 ? `<div><span>SSS Loan</span><b>-${money(d.sss_loan)}</b></div>` : ''}
+          ${d.pagibig_loan > 0 ? `<div><span>Pag-Ibig Loan</span><b>-${money(d.pagibig_loan)}</b></div>` : ''}
+          ${d.coop_share > 0 ? `<div><span>Coop Share</span><b>-${money(d.coop_share)}</b></div>` : ''}
+          ${d.other_deductions > 0 ? `<div><span>Other Deductions</span><b>-${money(d.other_deductions)}</b></div>` : ''}
+        </div>
+        
+        <div class="total-deductions">
+          <span>Total Deductions</span><b>-${money(d.total_deductions)}</b>
+        </div>
+
+        <div class="net-pay">
+          <span>NET PAY</span><b>${money(d.net_pay)}</b>
+        </div>
+
+        <div class="signatures">
+          <div>Received By: <span class="line">${esc(d.full_name)}</span></div>
+          <div>Approved By: <span class="line">Sinawe Mamao</span></div>
+        </div>
+      </section>`;
+    }).join('');
+
+    const win = window.open('', '_blank');
+    win.document.write(`<!DOCTYPE html><html><head><title>Payslips ${esc(dateRangeString)}</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; color: #000; }
+        .slip { page-break-after: always; padding: 30px 40px; max-width: 900px; margin: 0 auto; }
+        .slip:last-child { page-break-after: auto; }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; border: 1px solid #ddd; }
+        th, td { border-bottom: 1px solid #ddd; border-right: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+        th { background: #f8f9fa; font-weight: bold; }
+        td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+        
+        .totals-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin-top: 5px; }
+        .totals-list > div { display: flex; justify-content: space-between; padding: 2px 0; }
+        
+        .total-deductions { display: flex; justify-content: space-between; font-weight: bold; font-size: 13px; margin-top: 15px; border-top: 2px solid #000; padding-top: 8px; }
+        .net-pay { display: flex; justify-content: space-between; font-weight: bold; font-size: 16px; margin-top: 10px; border-top: 1px solid #000; padding-top: 8px; }
+        
+        .signatures { display: flex; justify-content: space-between; margin-top: 50px; font-size: 12px; }
+        .line { border-bottom: 1px solid #000; padding: 0 20px; font-weight: bold; display: inline-block; margin-left: 8px; }
+        
+        @media print { @page { size: A4; margin: 0; } .slip { padding: 15mm 20mm; } }
+      </style></head><body>${pages}</body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 400);
   };
 
   const handleExportIncentives = () => {
@@ -898,9 +1055,6 @@ export default function Dashboard({ session }) {
     })), `Incentives_${incWeek}.csv`);
   };
 
-  // Export the Daily Breakdown for every date from DAILY_EXPORT_START up to the latest uploaded date.
-  // Each driver-day gets the bracket formula applied: the saved bracket if there is one,
-  // otherwise the bracket suggested from that day's earnings (same as what the screen shows).
   const handleExportDaily = async () => {
     if (!isAdmin) return;
     const latest = availableDates[0];
@@ -957,8 +1111,8 @@ export default function Dashboard({ session }) {
             'Status': d.status,
             'Bracket': bracketLabel(key),
             'Basic': basic.toFixed(2),
-            'CA': ca.toFixed(2),
-            'Pay': round2(basic + ca).toFixed(2),
+            'Allowable CA': ca.toFixed(2),
+            'Pay': round2(basic).toFixed(2),
             'Bracket Source': b ? 'Saved' : (key === 'none' ? 'None' : 'Auto'),
           };
         });
@@ -971,7 +1125,7 @@ export default function Dashboard({ session }) {
     }
   };
 
-  // Driver slip: daily rows grouped by Mon-Sun week, with an automatic total for each week
+  // ============ PAYSLIP / BREAKDOWN ============
   const openPayslip = (driver) => {
     const recs = payrollDrivers
       .filter((d) => d.sap_id === driver.sap_id)
@@ -984,7 +1138,8 @@ export default function Dashboard({ session }) {
       const wk = weeksMap[w];
       const row = {
         date: rec.order_date, earnings: Number(rec.total_pay || 0), bracket: b?.bracket || 'none',
-        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), total: Number(b?.total_pay || 0),
+        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), 
+        total: Number(b?.basic_rate || 0), // CA EXCLUDED
       };
       wk.rows.push(row);
       wk.earnings += row.earnings; wk.basic += row.basic; wk.ca += row.ca; wk.total += row.total;
@@ -992,7 +1147,6 @@ export default function Dashboard({ session }) {
     setPayslipDriver({ ...driver, weeks: Object.values(weeksMap).sort((a, b) => a.start.localeCompare(b.start)) });
   };
 
-  // Day-by-day breakdown for one driver across the selected payroll period
   const breakdownData = useMemo(() => {
     if (!breakdownSap) return null;
     const recs = payrollDrivers
@@ -1005,10 +1159,11 @@ export default function Dashboard({ session }) {
     let running = 0;
     recs.forEach((rec) => {
       const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
+      const rowTotal = Number(b?.basic_rate || 0); // CA EXCLUDED
       const row = {
         date: rec.order_date, earnings: Number(rec.total_pay || 0), orders: Number(rec.orders_count || 0),
         km: Number(rec.distance || 0), bracket: b?.bracket || 'none',
-        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), pay: Number(b?.total_pay || 0),
+        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), pay: rowTotal,
       };
       running += row.pay;
       row.running = running;
@@ -1123,7 +1278,6 @@ export default function Dashboard({ session }) {
     </button>
   );
 
-  // admin-only cells in the Daily Breakdown: bracket picker + resulting amounts
   const bracketCells = (d) => {
     const k = `${d.sap_id}__${d.order_date}`;
     const b = brackets[k];
@@ -1155,7 +1309,7 @@ export default function Dashboard({ session }) {
             ? <input type="number" className="rv-mini-input" value={b?.charge_ca ?? 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'charge_ca', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
             : displayKey !== 'none' ? peso(visualCA) : '-'}
         </td>
-        <td className="num"><strong>{displayKey !== 'none' ? peso(visualBasic + visualCA) : '-'}</strong></td>
+        <td className="num"><strong>{displayKey !== 'none' ? peso(visualBasic) : '-'}</strong></td>
       </>
     );
   };
@@ -1319,7 +1473,13 @@ export default function Dashboard({ session }) {
                   </div>
                   <div className="rv-panel-tools">
                     {isAdmin && (
-                      <button type="button" onClick={handleExportDaily} disabled={exportingDaily || availableDates.length === 0} className="rv-pill-btn primary" title={`Export every day from ${formatDate(DAILY_EXPORT_START)} to the latest date`}>
+                      <button
+                        type="button"
+                        onClick={handleExportDaily}
+                        disabled={exportingDaily || availableDates.length === 0}
+                        className="rv-pill-btn primary"
+                        title={`Export every day from ${formatDate(DAILY_EXPORT_START)} to the latest date`}
+                      >
                         <Download size={16} /> {exportingDaily ? 'Exporting...' : `Export from ${shortDate(DAILY_EXPORT_START)}`}
                       </button>
                     )}
@@ -1339,7 +1499,7 @@ export default function Dashboard({ session }) {
                       <thead>
                         <tr>
                           <th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Phone</th><th className="num">Orders</th><th className="num">Total Pay</th><th className="num">Distance</th><th>Status</th>
-                          {isAdmin && <><th>Bracket</th><th className="num">Basic</th><th className="num">CA</th><th className="num">Pay</th></>}
+                          {isAdmin && <><th>Bracket</th><th className="num">Basic</th><th className="num">Allowable CA</th><th className="num">Pay</th></>}
                         </tr>
                       </thead>
                       <tbody>
@@ -1373,6 +1533,8 @@ export default function Dashboard({ session }) {
                   {periodStatus === 'Approved' && <button onClick={() => setPeriodStatus('Paid')} className="rv-pill-btn" style={{ background: '#16a34a', color: 'white', borderColor: '#16a34a' }}><Lock size={16} /> Mark as Paid</button>}
                   {periodStatus === 'Paid' && <button onClick={() => setPeriodStatus('Draft')} className="rv-pill-btn" style={{ background: '#ef4444', color: 'white', borderColor: '#ef4444' }}><Unlock size={16} /> Unlock</button>}
                   <button onClick={handleExportCSV} className="rv-pill-btn primary"><Download size={16} /> Export</button>
+                  <button onClick={handleExportPayslipsCSV} className="rv-pill-btn"><Download size={16} /> Export Payslips</button>
+                  <button onClick={printAllPayslips} className="rv-pill-btn"><Printer size={16} /> Print All Payslips</button>
                 </div>
               </div>
 
@@ -1396,14 +1558,14 @@ export default function Dashboard({ session }) {
               <div className="rv-chips">
                 <div className="rv-chip"><span>Drivers</span><strong>{payrollTotals.drivers}</strong></div>
                 <div className="rv-chip"><span>Basic</span><strong>{peso(payrollTotals.basic)}</strong></div>
-                <div className="rv-chip"><span>Basic CA</span><strong>{peso(payrollTotals.basicCa)}</strong></div>
+                <div className="rv-chip"><span>Allowable CA</span><strong>{peso(payrollTotals.basicCa)}</strong></div>
                 <div className="rv-chip hl"><span>Total Pay</span><strong>{peso(payrollTotals.total)}</strong></div>
                 <div className="rv-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>Total Net Pay</span><strong>{peso(payrollTotals.net)}</strong></div>
               </div>
 
               <p className="rv-note">
-                Totals add up the brackets you set in Daily Breakdown. {unsetDays > 0 ? <b>{unsetDays} driver-days in this period have no bracket yet. </b> : null}
-                Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + coop + other. Click a driver for the day-by-day breakdown, or the printer icon for the payslip.
+                Totals add up the brackets you set in Daily Breakdown. <b>Allowable CA is excluded from Net Pay computations.</b> {unsetDays > 0 ? <b>{unsetDays} driver-days in this period have no bracket yet. </b> : null}
+                Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + Coop + SSS + Pag-Ibig + Philhealth + Loans. Click a driver for the day-by-day breakdown.
               </p>
 
               <div className="rv-table-scroll">
@@ -1411,7 +1573,7 @@ export default function Dashboard({ session }) {
                   <thead>
                     <tr>
                       <th>SAP ID</th><th>Name</th><th className="num">#Days</th><th className="num">Earnings</th>
-                      <th className="num">Basic</th><th className="num">Basic CA</th><th className="num">Total</th>
+                      <th className="num">Basic</th><th className="num">Allowable CA</th><th className="num">Total Pay</th>
                       <th className="num">Deductions</th><th className="num">Net Pay</th>
                       <th style={{ textAlign: 'center' }}>Slip</th>
                     </tr>
@@ -1477,7 +1639,6 @@ export default function Dashboard({ session }) {
                 </p>
               </section>
 
-              {/* ---- Group setup ---- */}
               <section className="rv-card">
                 <div className="rv-panel-head">
                   <h3><Users size={18} /> {groupForm.id ? 'Edit group' : 'New group'}</h3>
@@ -1523,7 +1684,6 @@ export default function Dashboard({ session }) {
                 </form>
               </section>
 
-              {/* ---- Group results ---- */}
               {groupCards.length > 0 && (
                 <section className="rv-card">
                   <div className="rv-panel-head"><div><h3>Groups this week</h3><p className="rv-sub">Captain bonus follows who has a record each day · rice target {peso(RICE_GROUP_TARGET, 0)}</p></div></div>
@@ -1561,7 +1721,6 @@ export default function Dashboard({ session }) {
                 <section className="rv-card"><p className="rv-empty">No groups yet. Add a captain and members above to start the group incentives.</p></section>
               )}
 
-              {/* ---- Per-driver table ---- */}
               <section className="rv-card rv-table-card">
                 <div className="rv-table-scroll">
                   <table className="rv-table">
@@ -1607,9 +1766,18 @@ export default function Dashboard({ session }) {
                   <label className="rv-field wide"><span>Full name</span><input type="text" placeholder="Full name" value={newDriver.full_name} onChange={(e) => setNewDriver({ ...newDriver, full_name: e.target.value })} required /></label>
                   <label className="rv-field"><span>Phone number</span><input type="text" placeholder="09xx xxx xxxx" value={newDriver.phone} onChange={(e) => setNewDriver({ ...newDriver, phone: e.target.value })} /></label>
                   <label className="rv-field"><span>Plate number</span><input type="text" placeholder="ABC 1234" value={newDriver.vehicle_plate} onChange={(e) => setNewDriver({ ...newDriver, vehicle_plate: e.target.value })} /></label>
+                  
                   <label className="rv-field"><span>CA partial payment (₱)</span><input type="number" placeholder="0.00" value={newDriver.cash_advance} onChange={(e) => setNewDriver({ ...newDriver, cash_advance: e.target.value })} /></label>
                   <label className="rv-field"><span>Coop Share (₱)</span><input type="number" placeholder="0.00" value={newDriver.coop_share} onChange={(e) => setNewDriver({ ...newDriver, coop_share: e.target.value })} /></label>
+                  
+                  <label className="rv-field"><span>SSS (₱)</span><input type="number" placeholder="0.00" value={newDriver.sss} onChange={(e) => setNewDriver({ ...newDriver, sss: e.target.value })} /></label>
+                  <label className="rv-field"><span>Pag-Ibig (₱)</span><input type="number" placeholder="0.00" value={newDriver.pagibig} onChange={(e) => setNewDriver({ ...newDriver, pagibig: e.target.value })} /></label>
+                  <label className="rv-field"><span>Philhealth (₱)</span><input type="number" placeholder="0.00" value={newDriver.philhealth} onChange={(e) => setNewDriver({ ...newDriver, philhealth: e.target.value })} /></label>
+                  <label className="rv-field"><span>SSS Loan (₱)</span><input type="number" placeholder="0.00" value={newDriver.sss_loan} onChange={(e) => setNewDriver({ ...newDriver, sss_loan: e.target.value })} /></label>
+                  <label className="rv-field"><span>Pag-Ibig Loan (₱)</span><input type="number" placeholder="0.00" value={newDriver.pagibig_loan} onChange={(e) => setNewDriver({ ...newDriver, pagibig_loan: e.target.value })} /></label>
+                  
                   <label className="rv-field"><span>Other Deductions (₱)</span><input type="number" placeholder="0.00" value={newDriver.other_deductions} onChange={(e) => setNewDriver({ ...newDriver, other_deductions: e.target.value })} /></label>
+                  
                   <button type="submit" className="rv-pill-btn primary rv-form-submit" disabled={addingDriver}>{addingDriver ? 'Saving...' : (editingSapId ? 'Update Driver' : 'Add Driver')}</button>
                 </form>
               </section>
@@ -1627,7 +1795,7 @@ export default function Dashboard({ session }) {
                         <div className="rv-dir-info">
                           <strong>{d.full_name}</strong>
                           <small>SAP {d.sap_id} · {d.vehicle_plate || 'No plate'}</small>
-                          <small style={{ color: 'var(--red)' }}>Deductions: ₱{(Number(d.cash_advance) || 0) + (Number(d.coop_share) || 0) + (Number(d.other_deductions) || 0)}</small>
+                          <small style={{ color: 'var(--red)' }}>Deductions: ₱{(Number(d.cash_advance) || 0) + (Number(d.coop_share) || 0) + (Number(d.sss) || 0) + (Number(d.pagibig) || 0) + (Number(d.philhealth) || 0) + (Number(d.sss_loan) || 0) + (Number(d.pagibig_loan) || 0) + (Number(d.other_deductions) || 0)}</small>
                         </div>
                         <div className="rv-dir-actions">
                           <button type="button" className="rv-edit-btn" onClick={() => handleEditClick(d.sap_id, d.full_name, d.vehicle_plate)}><Edit size={15} /></button>
@@ -1694,7 +1862,7 @@ export default function Dashboard({ session }) {
                       <tr>
                         <th>Date</th><th className="num">Orders</th><th className="num">Km</th>
                         <th className="num">Earnings</th><th>Bracket</th>
-                        <th className="num">Basic</th><th className="num">CA</th>
+                        <th className="num">Basic</th><th className="num">Allowable CA</th>
                         <th className="num">Pay</th><th className="num">Running total</th>
                       </tr>
                     </thead>
@@ -1790,7 +1958,7 @@ export default function Dashboard({ session }) {
               )}
 
               <p className="rv-note" style={{ marginTop: 14 }}>
-                Total pay <b>{peso(breakdownData.totals.pay)}</b> = Basic <b>{peso(breakdownData.totals.basic)}</b> + Charge to CA <b>{peso(breakdownData.totals.ca)}</b>, from <b>{breakdownData.totals.paidDays}</b> day(s) with a bracket. Days showing "—" have no bracket yet.
+                Total pay <b>{peso(breakdownData.totals.pay)}</b> = Basic <b>{peso(breakdownData.totals.basic)}</b> (Allowable CA excluded), from <b>{breakdownData.totals.paidDays}</b> day(s) with a bracket. Days showing "—" have no bracket yet.
               </p>
             </div>
 
@@ -1820,11 +1988,23 @@ export default function Dashboard({ session }) {
                 <p><strong>Status:</strong> {periodStatus}</p>
               </div>
 
+              <div style={{ display: 'flex', gap: '20px', margin: '20px 0' }}>
+                <div style={{ flex: 1, background: '#f3f4f6', padding: '12px', borderRadius: '8px' }}>
+                  <small style={{ color: '#555' }}>Basic</small>
+                  <h3 style={{ margin: 0 }}>{peso(payslipDriver.basic)}</h3>
+                </div>
+                <div style={{ flex: 1, background: '#f3f4f6', padding: '12px', borderRadius: '8px' }}>
+                  <small style={{ color: '#555' }}>Allowable CA</small>
+                  <h3 style={{ margin: 0 }}>{peso(payslipDriver.basic_ca)}</h3>
+                </div>
+              </div>
+              <p style={{ fontSize: '11px', color: '#666', marginTop: '-10px', marginBottom: '20px' }}>Note: Basic CA is not included in Net pay computations.</p>
+
               <table className="rv-table" style={{ fontSize: '12px', marginTop: '20px' }}>
                 <thead>
                   <tr>
                     <th>Date</th><th className="num">Total Earnings</th><th>Bracket</th>
-                    <th className="num">Basic Rate</th><th className="num">Charge to CA</th><th className="num">Total Pay</th>
+                    <th className="num">Basic Rate</th><th className="num">Allowable CA</th><th className="num">Total Pay</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1845,28 +2025,28 @@ export default function Dashboard({ session }) {
                 </tbody>
               </table>
 
-              <div className="rv-payslip-summary">
-                <div className="rv-payslip-row"><span>Days with basic pay</span><strong>{payslipDriver.days_worked}</strong></div>
-                <div className="rv-payslip-row"><span>Total earnings</span><strong>{peso(payslipDriver.total_earnings)}</strong></div>
-                <div className="rv-payslip-row"><span>Basic</span><strong>{peso(payslipDriver.basic)}</strong></div>
-                <div className="rv-payslip-row"><span>Basic CA</span><strong>{peso(payslipDriver.basic_ca)}</strong></div>
-                <div className="rv-payslip-row" style={{ fontWeight: 'bold' }}><span>Total Pay</span><strong>{peso(payslipDriver.total_basic)}</strong></div>
+              <div className="rv-payslip-summary" style={{ marginTop: '30px' }}>
+                <h4 style={{ borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>Adjustments:</h4>
+                <p style={{ minHeight: '30px', color: '#888', fontStyle: 'italic', fontSize: '12px' }}>None</p>
 
-                <div style={{ borderTop: '1px solid #e5e7eb', margin: '10px 0', paddingTop: '10px' }}>
-                  <div className="rv-payslip-row"><span>Previous period CA{prevRangeString ? ` (${prevRangeString})` : ''}</span><strong>-{peso(payslipDriver.prev_ca)}</strong></div>
-                  <div className="rv-payslip-row"><span>CA partial payment (older balance)</span><strong>-{peso(payslipDriver.partial_ca)}</strong></div>
-                  <div className="rv-payslip-row"><span>Coop Share</span><strong>-{peso(payslipDriver.coop_share)}</strong></div>
-                  <div className="rv-payslip-row"><span>Other Deductions</span><strong>-{peso(payslipDriver.other_deductions)}</strong></div>
-                </div>
+                <h4 style={{ borderBottom: '1px solid #ddd', paddingBottom: '5px', marginTop: '20px' }}>Deductions:</h4>
+                <div className="rv-payslip-row"><span>Cash Balance (Prev CA + Partial)</span><strong>-{peso(payslipDriver.prev_ca + payslipDriver.partial_ca)}</strong></div>
+                {payslipDriver.sss > 0 && <div className="rv-payslip-row"><span>SSS</span><strong>-{peso(payslipDriver.sss)}</strong></div>}
+                {payslipDriver.pagibig > 0 && <div className="rv-payslip-row"><span>Pag-Ibig</span><strong>-{peso(payslipDriver.pagibig)}</strong></div>}
+                {payslipDriver.philhealth > 0 && <div className="rv-payslip-row"><span>Philhealth</span><strong>-{peso(payslipDriver.philhealth)}</strong></div>}
+                {payslipDriver.sss_loan > 0 && <div className="rv-payslip-row"><span>SSS Loan</span><strong>-{peso(payslipDriver.sss_loan)}</strong></div>}
+                {payslipDriver.pagibig_loan > 0 && <div className="rv-payslip-row"><span>Pag-Ibig Loan</span><strong>-{peso(payslipDriver.pagibig_loan)}</strong></div>}
+                {payslipDriver.coop_share > 0 && <div className="rv-payslip-row"><span>Coop Share</span><strong>-{peso(payslipDriver.coop_share)}</strong></div>}
+                {payslipDriver.other_deductions > 0 && <div className="rv-payslip-row"><span>Other Deductions</span><strong>-{peso(payslipDriver.other_deductions)}</strong></div>}
 
-                <div className="rv-payslip-row" style={{ fontWeight: 'bold' }}>
+                <div className="rv-payslip-row" style={{ fontWeight: 'bold', marginTop: '10px', borderTop: '1px solid #ddd', paddingTop: '10px' }}>
                   <span>Total Deductions</span>
                   <strong style={{ color: 'var(--red)' }}>-{peso(payslipDriver.total_deductions)}</strong>
                 </div>
 
-                <div className="rv-payslip-row total">
-                  <span>Net Pay</span>
-                  <strong className="text-green">{peso(payslipDriver.net_pay)}</strong>
+                <div className="rv-payslip-row total" style={{ marginTop: '10px', background: '#e6f4ea', padding: '15px', borderRadius: '8px' }}>
+                  <span style={{ fontWeight: 'bold' }}>Net Pay</span>
+                  <strong className="text-green" style={{ fontSize: '18px' }}>{peso(payslipDriver.net_pay)}</strong>
                 </div>
               </div>
             </div>

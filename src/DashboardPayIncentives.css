@@ -110,3 +110,52 @@
 .rv-modal .rv-pill-btn:not(.primary) {
   background: #fff; color: #12408a; border: 1px solid #c9d3ea;
 }
+/* ===================== TRIPS TAB + EXPORT TRIPS BUTTON ===================== */
+
+/* Panel head tools: allow the extra button to wrap cleanly on narrow screens */
+.rv-panel-head .rv-panel-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* Make sure the pills inside the tools row don't stretch */
+.rv-panel-head .rv-panel-tools .rv-pill-btn,
+.rv-panel-head .rv-panel-tools .rv-search {
+  flex: 0 0 auto;
+}
+
+/* Trips tab controls row: selects + refresh button wrap nicely */
+.rv-payroll-controls {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+/* Trips totals row: let the label stretch and keep numbers right-aligned */
+.rv-table .rv-total-row td {
+  font-weight: 600;
+  background: var(--panel-2, #f3f4f6);
+}
+
+.rv-table .rv-total-row td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Trip rows look better with a bit of tabular number alignment */
+.rv-table td.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Trips "Time" column can be tight on small screens — keep it on one line */
+.rv-table td:nth-child(5) {
+  white-space: nowrap;
+}
+
+/* Optional: distinguish the Trips tab table from the Daily table */
+.rv-card .rv-table-scroll table td:nth-child(3) strong {
+  font-weight: 600;
+}
