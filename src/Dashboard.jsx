@@ -924,115 +924,118 @@ export default function Dashboard({ session }) {
     downloadCSV(rows, `Payslips_${periodStatus}_${startDate}_to_${endDate}.csv`);
   };
 
+  // ============ PRINT ALL PAYSLIPS (5 per A4 page) ============
   const printAllPayslips = () => {
     if (!isAdmin) return;
     if (payrollData.length === 0) return alert('No data to print.');
 
+    const SLIPS_PER_PAGE = 5;
     const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const money = (n) => `₱${Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-    const pages = payrollData.map((d) => {
+    const slips = payrollData.map((d) => {
       const recs = payrollDrivers
         .filter((r) => r.sap_id === d.sap_id)
         .sort((a, b) => a.order_date.localeCompare(b.order_date));
-        
-      const dayRows = recs.map((rec) => {
+
+      const rowHtml = (rec) => {
         const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
-        const rowTotal = Number(b?.basic_rate || 0); // CA EXCLUDED
+        const pay = Number(b?.basic_rate || 0); // CA EXCLUDED
         return `<tr>
-          <td>${esc(formatDate(rec.order_date))}</td>
+          <td>${esc(shortDate(rec.order_date))}</td>
           <td class="num">${money(rec.total_pay)}</td>
-          <td>${esc(bracketLabel(b?.bracket || 'none'))}</td>
-          <td class="num">${b?.total_pay ? money(b.basic_rate) : '-'}</td>
-          <td class="num">${b?.total_pay ? money(b.charge_ca) : '-'}</td>
-          <td class="num">${b?.total_pay ? money(rowTotal) : '-'}</td>
+          <td class="num">${pay ? money(pay) : '-'}</td>
         </tr>`;
-      }).join('');
+      };
+      const miniTable = (list) => `<table>
+        <thead><tr><th>Date</th><th class="num">Earnings</th><th class="num">Pay</th></tr></thead>
+        <tbody>${list.map(rowHtml).join('')}</tbody>
+      </table>`;
+
+      const half = Math.ceil(recs.length / 2);
+      const left = recs.slice(0, half);
+      const right = recs.slice(half);
 
       return `<section class="slip">
-        <h2 style="text-align:left; margin-bottom: 2px; color: #333; font-size: 13px;">NEMINTSCO - GSM</h2>
-        <h1 style="text-align:left; font-size: 20px; margin: 0 0 4px 0; text-transform: uppercase;">${esc(d.full_name)}</h1>
-        <p style="font-size: 12px; margin: 0 0 2px 0;">SAP ID: ${esc(d.sap_id)} · Plate: ${esc(d.plate_number)}</p>
-        <p style="font-size: 12px; margin: 0 0 20px 0;"><b>Period:</b> ${esc(dateRangeString)} · <b>Status:</b> ${esc(periodStatus)}</p>
-        
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 20%;">Date</th>
-              <th class="num" style="width: 16%;">Earnings</th>
-              <th style="width: 16%;">Bracket</th>
-              <th class="num" style="width: 16%;">Basic</th>
-              <th class="num" style="width: 16%;">Allowable CA</th>
-              <th class="num" style="width: 16%;">Pay</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${dayRows}
-          </tbody>
-        </table>
-
-        <div class="totals-list">
-          <div><span>Days with basic pay</span><b>${d.days_worked}</b></div>
-          <div><span>Total earnings</span><b>${money(d.total_earnings)}</b></div>
-          <div><span>Basic</span><b>${money(d.basic)}</b></div>
-          <div><span>Allowable CA</span><b>${money(d.basic_ca)}</b></div>
-          <div><span>Total Pay</span><b>${money(d.total_basic)}</b></div>
+        <div class="slip-head">
+          <div><b class="name">${esc(d.full_name)}</b> <span>SAP ${esc(d.sap_id)} · ${esc(d.plate_number)}</span></div>
+          <div><span>NEMINTSCO - GSM · ${esc(dateRangeString)} · ${esc(periodStatus)}</span></div>
         </div>
+        <div class="slip-body">
+          <div class="zone days">
+            ${miniTable(left)}
+            ${right.length ? miniTable(right) : '<div></div>'}
+          </div>
 
-        <h3 style="margin-top: 20px; font-size: 13px; font-weight: bold; margin-bottom: 8px;">Adjustments:</h3>
-        <p style="min-height: 20px; font-size: 12px; color: #555;"> </p>
+          <div class="zone summary">
+            <div class="row"><span>Days w/ basic pay</span><b>${d.days_worked}</b></div>
+            <div class="row"><span>Total earnings</span><b>${money(d.total_earnings)}</b></div>
+            <div class="row"><span>Basic</span><b>${money(d.basic)}</b></div>
+            <div class="row"><span>Allowable CA</span><b>${money(d.basic_ca)}</b></div>
+            <div class="row strong"><span>Total Pay</span><b>${money(d.total_basic)}</b></div>
+            <div class="sig">
+              <div>Received: <span class="line">${esc(d.full_name)}</span></div>
+              <div>Approved: <span class="line">Sinawe Mamao</span></div>
+            </div>
+          </div>
 
-        <h3 style="margin-top: 20px; font-size: 13px; font-weight: bold; margin-bottom: 8px;">Deductions:</h3>
-        <div class="totals-list">
-          <div><span>Cash Balance</span><b>-${money(d.prev_ca + d.partial_ca)}</b></div>
-          ${d.sss > 0 ? `<div><span>SSS</span><b>-${money(d.sss)}</b></div>` : ''}
-          ${d.pagibig > 0 ? `<div><span>Pag-Ibig</span><b>-${money(d.pagibig)}</b></div>` : ''}
-          ${d.philhealth > 0 ? `<div><span>Philhealth</span><b>-${money(d.philhealth)}</b></div>` : ''}
-          ${d.sss_loan > 0 ? `<div><span>SSS Loan</span><b>-${money(d.sss_loan)}</b></div>` : ''}
-          ${d.pagibig_loan > 0 ? `<div><span>Pag-Ibig Loan</span><b>-${money(d.pagibig_loan)}</b></div>` : ''}
-          ${d.coop_share > 0 ? `<div><span>Coop Share</span><b>-${money(d.coop_share)}</b></div>` : ''}
-          ${d.other_deductions > 0 ? `<div><span>Other Deductions</span><b>-${money(d.other_deductions)}</b></div>` : ''}
-        </div>
-        
-        <div class="total-deductions">
-          <span>Total Deductions</span><b>-${money(d.total_deductions)}</b>
-        </div>
-
-        <div class="net-pay">
-          <span>NET PAY</span><b>${money(d.net_pay)}</b>
-        </div>
-
-        <div class="signatures">
-          <div>Received By: <span class="line">${esc(d.full_name)}</span></div>
-          <div>Approved By: <span class="line">Sinawe Mamao</span></div>
+          <div class="zone deduct">
+            <div class="row"><span>Cash Balance</span><b>-${money(d.prev_ca + d.partial_ca)}</b></div>
+            ${d.sss > 0 ? `<div class="row"><span>SSS</span><b>-${money(d.sss)}</b></div>` : ''}
+            ${d.pagibig > 0 ? `<div class="row"><span>Pag-Ibig</span><b>-${money(d.pagibig)}</b></div>` : ''}
+            ${d.philhealth > 0 ? `<div class="row"><span>Philhealth</span><b>-${money(d.philhealth)}</b></div>` : ''}
+            ${d.sss_loan > 0 ? `<div class="row"><span>SSS Loan</span><b>-${money(d.sss_loan)}</b></div>` : ''}
+            ${d.pagibig_loan > 0 ? `<div class="row"><span>Pag-Ibig Loan</span><b>-${money(d.pagibig_loan)}</b></div>` : ''}
+            ${d.coop_share > 0 ? `<div class="row"><span>Coop Share</span><b>-${money(d.coop_share)}</b></div>` : ''}
+            ${d.other_deductions > 0 ? `<div class="row"><span>Other Deductions</span><b>-${money(d.other_deductions)}</b></div>` : ''}
+            <div class="row total-ded"><span>Total Deductions</span><b>-${money(d.total_deductions)}</b></div>
+            <div class="row net"><span>NET PAY</span><b>${money(d.net_pay)}</b></div>
+          </div>
         </div>
       </section>`;
-    }).join('');
+    });
+
+    // group into pages of SLIPS_PER_PAGE
+    const pages = [];
+    for (let i = 0; i < slips.length; i += SLIPS_PER_PAGE) {
+      pages.push(`<div class="page">${slips.slice(i, i + SLIPS_PER_PAGE).join('')}</div>`);
+    }
 
     const win = window.open('', '_blank');
     win.document.write(`<!DOCTYPE html><html><head><title>Payslips ${esc(dateRangeString)}</title>
       <style>
         * { box-sizing: border-box; }
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; color: #000; }
-        .slip { page-break-after: always; padding: 30px 40px; max-width: 900px; margin: 0 auto; }
-        .slip:last-child { page-break-after: auto; }
-        
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 11px; border: 1px solid #ddd; }
-        th, td { border-bottom: 1px solid #ddd; border-right: 1px solid #ddd; padding: 6px 8px; text-align: left; }
-        th { background: #f8f9fa; font-weight: bold; }
+        @page { size: A4 portrait; margin: 6mm; }
+        body { font-family: Arial, sans-serif; margin: 0; color: #000; font-size: 7pt; }
+        .page { height: 280mm; page-break-after: always; }
+        .page:last-child { page-break-after: auto; }
+
+        .slip { height: 56mm; overflow: hidden; padding: 1.5mm 2mm; border-bottom: 1px dashed #888; page-break-inside: avoid; }
+        .slip:last-child { border-bottom: none; }
+
+        .slip-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #000; padding-bottom: 1mm; margin-bottom: 1.5mm; }
+        .slip-head .name { font-size: 10pt; text-transform: uppercase; margin-right: 6px; }
+        .slip-head span { font-size: 7pt; color: #333; }
+
+        .slip-body { display: flex; gap: 3mm; }
+        .zone.days { flex: 0 0 98mm; display: flex; gap: 2mm; }
+        .zone.days > * { flex: 1; }
+        .zone.summary { flex: 0 0 47mm; display: flex; flex-direction: column; }
+        .zone.deduct { flex: 1; display: flex; flex-direction: column; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 6.3pt; }
+        th, td { border: 1px solid #ccc; padding: 0.3mm 1mm; line-height: 1.25; text-align: left; }
+        th { background: #f1f1f1; }
         td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-        
-        .totals-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin-top: 5px; }
-        .totals-list > div { display: flex; justify-content: space-between; padding: 2px 0; }
-        
-        .total-deductions { display: flex; justify-content: space-between; font-weight: bold; font-size: 13px; margin-top: 15px; border-top: 2px solid #000; padding-top: 8px; }
-        .net-pay { display: flex; justify-content: space-between; font-weight: bold; font-size: 16px; margin-top: 10px; border-top: 1px solid #000; padding-top: 8px; }
-        
-        .signatures { display: flex; justify-content: space-between; margin-top: 50px; font-size: 12px; }
-        .line { border-bottom: 1px solid #000; padding: 0 20px; font-weight: bold; display: inline-block; margin-left: 8px; }
-        
-        @media print { @page { size: A4; margin: 0; } .slip { padding: 15mm 20mm; } }
-      </style></head><body>${pages}</body></html>`);
+
+        .row { display: flex; justify-content: space-between; padding: 0.4mm 0; font-size: 7pt; gap: 4px; }
+        .row.strong { border-top: 1px solid #000; font-weight: bold; margin-top: 0.5mm; }
+        .row.total-ded { border-top: 1px solid #000; font-weight: bold; margin-top: 1mm; }
+        .row.net { border-top: 2px solid #000; font-weight: bold; font-size: 9pt; margin-top: 0.5mm; }
+
+        .sig { margin-top: auto; font-size: 6.5pt; display: flex; flex-direction: column; gap: 2.5mm; padding-top: 3mm; }
+        .line { border-bottom: 1px solid #000; padding: 0 3px; font-weight: bold; display: inline-block; min-width: 24mm; }
+      </style></head><body>${pages.join('')}</body></html>`);
     win.document.close();
     win.focus();
     setTimeout(() => { win.print(); }, 400);
