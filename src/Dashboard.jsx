@@ -975,7 +975,7 @@ export default function Dashboard({ session }) {
             <div class="row strong"><span>Total Pay</span><b>${money(d.total_basic)}</b></div>
             <div class="sig">
               <div>Received: <span class="line">${esc(d.full_name)}</span></div>
-              <div>Approved: <span class="line">Sinawe Mamao</span></div>
+              <div>Approved: <span class="line"></span></div>
             </div>
           </div>
 
