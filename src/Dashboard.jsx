@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
 import { supabase } from './supabaseClient';
 import Papa from 'papaparse';
-import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, Download, Wallet, UserPlus, Edit, Printer, CheckCircle, Lock, Unlock, Clock, X, Home, Users, Gift, Plus } from 'lucide-react';
+import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, Download, Wallet, UserPlus, Edit, Printer, CheckCircle, Lock, Unlock, X, Home, Users, Gift, Plus } from 'lucide-react';
 import './Dashboard.css';
 import './DashboardTabs.css';
 import './DashboardDark.css';
@@ -77,6 +77,7 @@ const getPrevPeriod = (start, end) => {
 };
 
 const STATUS_FILTERS = ['All', 'HP', 'MP', 'LP', 'Zombie'];
+const DAILY_EXPORT_START = '2026-10-28'; // the Daily Breakdown export starts from this date
 const EMPTY_DRIVER = { sap_id: '', full_name: '', phone: '', vehicle_plate: '', cash_advance: 0, coop_share: 0, other_deductions: 0 };
 const EMPTY_GROUP = { id: null, name: '', captain: '', members: [] };
 
@@ -87,6 +88,13 @@ export default function Dashboard({ session }) {
   const [directory, setDirectory] = useState([]);
   const [brackets, setBrackets] = useState({}); // key `${sap_id}__${order_date}` -> row
   const [groups, setGroups] = useState([]);
+  const [bracketsReady, setBracketsReady] = useState(''); // date whose saved brackets have finished loading
+  const [breakdownSap, setBreakdownSap] = useState(null); // driver opened in the day-by-day breakdown
+  const [breakdownOrders, setBreakdownOrders] = useState({}); // order_date -> orders of that driver
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState('');
+  const [collapsedDays, setCollapsedDays] = useState(new Set()); // days whose orders are hidden
+  const [openOrders, setOpenOrders] = useState(new Set());       // orders showing all CSV fields
 
   const [availableDates, setAvailableDates] = useState([]);
   const [selectedDate, setSelectedDate] = useState('');
@@ -98,6 +106,7 @@ export default function Dashboard({ session }) {
   const [payrollLoading, setPayrollLoading] = useState(false);
   const [incLoading, setIncLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [exportingDaily, setExportingDaily] = useState(false);
   const fileInputRef = useRef(null);
 
   const [tab, setTab] = useState('overview');
@@ -135,29 +144,22 @@ export default function Dashboard({ session }) {
   const activeTab = TABS.some((t) => t.id === tab) ? tab : 'overview';
 
   const dirMap = useMemo(() => new Map(directory.map((d) => [String(d.sap_id).trim(), d])), [directory]);
-
-  // ============ COMBINE DIRECTORY WITH UPLOADED DRIVERS ============
+  // directory + drivers that only exist in uploaded data (so they can be picked as captain/members)
   const combinedDirectory = useMemo(() => {
     const list = [...directory];
     const seen = new Set(list.map((d) => String(d.sap_id).trim()));
-    
-    rawPayrollDrivers.forEach((d) => {
+    [...rawPayrollDrivers, ...rawIncDrivers, ...rawDrivers].forEach((d) => {
       const id = String(d.sap_id).trim();
       if (!seen.has(id)) {
         seen.add(id);
         list.push({
-          sap_id: d.sap_id,
-          full_name: d.full_name || 'Unknown Driver',
-          vehicle_plate: d.vehicle_plate || '',
-          phone: d.phone || '',
-          cash_advance: 0, // default for uploaded-only drivers
-          coop_share: 0,
-          other_deductions: 0,
+          sap_id: d.sap_id, full_name: d.full_name || 'Unknown Driver', vehicle_plate: d.vehicle_plate || '',
+          phone: d.phone || '', cash_advance: 0, coop_share: 0, other_deductions: 0,
         });
       }
     });
     return list.sort((a, b) => String(a.full_name).localeCompare(String(b.full_name)));
-  }, [directory, rawPayrollDrivers]);
+  }, [directory, rawPayrollDrivers, rawIncDrivers, rawDrivers]);
 
   const withDirectory = (rows) =>
     rows.map((r) => {
@@ -190,7 +192,7 @@ export default function Dashboard({ session }) {
 
   // brackets for a date range (paged, so more than 1000 rows still load)
   const fetchBrackets = async (start, end) => {
-    if (!start || !end) return;
+    if (!start || !end) return {};
     let all = [];
     let from = 0;
     while (true) {
@@ -201,11 +203,33 @@ export default function Dashboard({ session }) {
       if (data.length < 1000) break;
       from += 1000;
     }
-    setBrackets((prev) => {
-      const next = { ...prev };
-      all.forEach((r) => { next[`${r.sap_id}__${r.order_date}`] = r; });
-      return next;
+    const fetched = {};
+    all.forEach((r) => { fetched[`${r.sap_id}__${r.order_date}`] = r; });
+    setBrackets((prev) => ({ ...prev, ...fetched }));
+    return fetched;
+  };
+
+  // Gives every driver-day without a bracket the one that matches its earnings (same table as the
+  // Daily Breakdown dropdown), so each day's basic pay is counted without opening every date first.
+  // Brackets you already saved are never touched, and PAID periods are skipped.
+  const autoFillBrackets = async (statRows, saved) => {
+    const toSave = [];
+    statRows.forEach((d) => {
+      if (saved[`${d.sap_id}__${d.order_date}`]) return;
+      const key = suggestBracket(d.total_pay);
+      if (!key) return;
+      const b = BRACKETS.find((x) => x.key === key);
+      toSave.push({ sap_id: d.sap_id, order_date: d.order_date, bracket: key, basic_rate: b.basic, charge_ca: b.ca, total_pay: round2(b.basic + b.ca) });
     });
+    if (toSave.length === 0) return;
+    const done = {};
+    for (let i = 0; i < toSave.length; i += 500) {
+      const chunk = toSave.slice(i, i + 500);
+      const { error } = await supabase.from('daily_brackets').upsert(chunk, { onConflict: 'sap_id,order_date' });
+      if (error) { console.error('Auto bracket save failed:', error.message); break; }
+      chunk.forEach((r) => { done[`${r.sap_id}__${r.order_date}`] = r; });
+    }
+    setBrackets((prev) => ({ ...prev, ...done }));
   };
 
   const fetchAvailableDates = async () => {
@@ -238,10 +262,19 @@ export default function Dashboard({ session }) {
     setPayrollLoading(true);
     const { data, error } = await supabase
       .from('daily_driver_stats').select('*').gte('order_date', start).lte('order_date', end);
-    if (!error) setPayrollDrivers(data || []);
-    await fetchBrackets(start, end);
+    const rows = error ? [] : (data || []);
+    if (!error) setPayrollDrivers(rows);
+    let saved = await fetchBrackets(start, end);
+    let allRows = rows;
     const prev = getPrevPeriod(start, end);
-    if (prev) await fetchBrackets(prev[0], prev[1]);
+    if (prev) {
+      const prevSaved = await fetchBrackets(prev[0], prev[1]);
+      saved = { ...saved, ...prevSaved };
+      const { data: prevData } = await supabase
+        .from('daily_driver_stats').select('*').gte('order_date', prev[0]).lte('order_date', prev[1]);
+      allRows = [...rows, ...(prevData || [])];
+    }
+    if (periodStatus !== 'Paid') await autoFillBrackets(allRows, saved);
     setPayrollLoading(false);
   };
 
@@ -256,9 +289,45 @@ export default function Dashboard({ session }) {
 
   useEffect(() => { fetchAvailableDates(); fetchDirectory(); }, []);
   useEffect(() => { if (isAdmin) fetchGroups(); }, [isAdmin]);
-  useEffect(() => { if (selectedDate) { fetchDrivers(selectedDate); if (isAdmin) fetchBrackets(selectedDate, selectedDate); } }, [selectedDate]);
+  useEffect(() => {
+    if (!selectedDate) return;
+    setBracketsReady('');
+    fetchDrivers(selectedDate);
+    if (isAdmin) fetchBrackets(selectedDate, selectedDate).then(() => setBracketsReady(selectedDate));
+  }, [selectedDate]);
   useEffect(() => { if (isAdmin && startDate && endDate) fetchPayrollDrivers(startDate, endDate); }, [startDate, endDate, isAdmin]);
   useEffect(() => { if (isAdmin && incWeek) fetchIncDrivers(incWeek); }, [incWeek, isAdmin]);
+
+  // every order of the opened driver inside the payroll period
+  useEffect(() => {
+    setCollapsedDays(new Set());
+    setOpenOrders(new Set());
+    if (!breakdownSap || !startDate || !endDate) { setBreakdownOrders({}); return; }
+    let cancelled = false;
+    (async () => {
+      setOrdersLoading(true);
+      setOrdersError('');
+      let all = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('driver_orders').select('*')
+          .eq('sap_id', String(breakdownSap)).gte('order_date', startDate).lte('order_date', endDate)
+          .order('order_date', { ascending: true }).order('seq', { ascending: true })
+          .range(from, from + 999);
+        if (error) { if (!cancelled) setOrdersError(error.message); break; }
+        all = all.concat(data || []);
+        if (!data || data.length < 1000) break;
+        from += 1000;
+      }
+      if (cancelled) return;
+      const map = {};
+      all.forEach((o) => { (map[o.order_date] = map[o.order_date] || []).push(o); });
+      setBreakdownOrders(map);
+      setOrdersLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [breakdownSap, startDate, endDate]);
 
   // ============ MANUAL BRACKETS ============
   const isLocked = (date) => periodStatus === 'Paid' && startDate && endDate && date >= startDate && date <= endDate;
@@ -293,23 +362,17 @@ export default function Dashboard({ session }) {
   };
 
   // ============ AUTO-ASSIGN BRACKETS ============
+  // Fills only days that have no saved bracket, and only AFTER the saved brackets for
+  // that date finished loading, so your manual changes are never overwritten.
   useEffect(() => {
-    if (!isAdmin || !drivers.length) return;
-
+    if (!isAdmin || !drivers.length || bracketsReady !== selectedDate) return;
     drivers.forEach((d) => {
-      const k = `${d.sap_id}__${d.order_date}`;
-      const existing = brackets[k];
-      
-      // Only auto-assign if there is no bracket set yet
-      if (!existing || existing.bracket === 'none') {
-        const suggested = suggestBracket(d.total_pay);
-        if (suggested) {
-          // Call saveBracket silently to prevent alert popups for background saves
-          saveBracket(d.sap_id, d.order_date, suggested, null, true); 
-        }
-      }
+      if (d.order_date !== selectedDate) return;
+      if (brackets[`${d.sap_id}__${d.order_date}`]) return;
+      const suggested = suggestBracket(d.total_pay);
+      if (suggested) saveBracket(d.sap_id, d.order_date, suggested, null, true);
     });
-  }, [drivers, brackets, isAdmin]);
+  }, [drivers, brackets, isAdmin, bracketsReady, selectedDate]);
 
   const setCustomLocal = (sapId, date, field, value) => {
     const k = `${sapId}__${date}`;
@@ -318,32 +381,6 @@ export default function Dashboard({ session }) {
   const commitCustom = (sapId, date) => {
     const b = brackets[`${sapId}__${date}`];
     if (b) saveBracket(sapId, date, 'custom', { basic: b.basic_rate, ca: b.charge_ca });
-  };
-
-  // ============ PAY PERIOD PRESETS ============
-  const setPeriodPreset = (type) => {
-    if (periodStatus === 'Paid') return alert('🔒 This period is locked because it is marked as PAID.');
-    if (availableDates.length === 0) return;
-
-    const latestDateStr = availableDates[0];
-    const latestDate = new Date(latestDateStr + 'T00:00:00');
-
-    if (type === '1st-15th') {
-      const y = latestDate.getFullYear();
-      const m = String(latestDate.getMonth() + 1).padStart(2, '0');
-      setStartDate(`${y}-${m}-01`);
-      setEndDate(`${y}-${m}-15`);
-    } else if (type === '16th-End') {
-      const y = latestDate.getFullYear();
-      const m = latestDate.getMonth();
-      const lastDay = new Date(y, m + 1, 0).getDate();
-      const mStr = String(m + 1).padStart(2, '0');
-      setStartDate(`${y}-${mStr}-16`);
-      setEndDate(`${y}-${mStr}-${lastDay}`);
-    } else if (type === 'Last 7 Days') {
-      setStartDate(addDays(latestDateStr, -6));
-      setEndDate(latestDateStr);
-    }
   };
 
   // ============ ADD / EDIT DRIVER ============
@@ -453,6 +490,7 @@ export default function Dashboard({ session }) {
       return;
     }
     await supabase.from('daily_brackets').delete().not('sap_id', 'is', null);
+    await supabase.from('driver_orders').delete().not('sap_id', 'is', null);
     if (wipeDirectory) await supabase.from('driver_directory').delete().not('sap_id', 'is', null);
 
     setDrivers([]); setPayrollDrivers([]); setIncDrivers([]); setBrackets({}); setAvailableDates([]);
@@ -481,6 +519,28 @@ export default function Dashboard({ session }) {
     return 'HP';
   };
 
+  // replace the stored orders of every driver/date that was just uploaded
+  const replaceOrders = async (records, orderRows) => {
+    try {
+      const byDate = {};
+      records.forEach((r) => { (byDate[r.order_date] = byDate[r.order_date] || []).push(r.sap_id); });
+      for (const date of Object.keys(byDate)) {
+        const ids = byDate[date];
+        for (let i = 0; i < ids.length; i += 100) {
+          const { error } = await supabase.from('driver_orders').delete().eq('order_date', date).in('sap_id', ids.slice(i, i + 100));
+          if (error) return error.message;
+        }
+      }
+      for (let i = 0; i < orderRows.length; i += 500) {
+        const { error } = await supabase.from('driver_orders').insert(orderRows.slice(i, i + 500));
+        if (error) return error.message;
+      }
+      return '';
+    } catch (err) {
+      return err.message || 'unknown error';
+    }
+  };
+
   // ============ CSV UPLOAD ============
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
@@ -505,6 +565,8 @@ export default function Dashboard({ session }) {
       complete: async (results) => {
         const rows = results.data;
         const grouped = {};
+        const orderRows = [];
+        const seqMap = {};
 
         rows.forEach((row) => {
           const cleanRow = {};
@@ -541,6 +603,15 @@ export default function Dashboard({ session }) {
           grouped[key].distance += dist;
           grouped[key].total_pay += pay;
           grouped[key].orders_count += 1;
+
+          // keep each order too, so the driver breakdown can list them
+          const refKey = Object.keys(cleanRow).find((k) => /order.*(id|no|number|num|#)|^order$|(tracking|delivery|waybill|task|job).*(id|no|number)/i.test(k));
+          seqMap[key] = (seqMap[key] || 0) + 1;
+          orderRows.push({
+            sap_id: sapId, order_date: orderDate, seq: seqMap[key],
+            order_ref: refKey ? String(cleanRow[refKey] || '').trim() : '',
+            order_time: createTime, distance: dist, total_pay: pay, raw: cleanRow,
+          });
         });
 
         const records = Object.values(grouped).map((d) => ({
@@ -558,7 +629,8 @@ export default function Dashboard({ session }) {
         if (error) alert('Upload failed: ' + error.message);
         else {
           const dates = [...new Set(records.map((r) => r.order_date))].sort();
-          alert(`✅ Uploaded ${records.length} records.`);
+          const orderErr = await replaceOrders(records, orderRows);
+          alert(`✅ Uploaded ${records.length} records.` + (orderErr ? `\n⚠️ Order details were not saved: ${orderErr}` : `\n${orderRows.length} individual orders saved.`));
           setSelectedDate(dates[dates.length - 1]);
           await fetchAvailableDates();
         }
@@ -575,6 +647,7 @@ export default function Dashboard({ session }) {
     if (periodStatus === 'Paid') return alert('🔒 Cannot delete data from a PAID period.');
     if (!window.confirm(`⚠️ DELETE ALL records for ${selectedDate}?`)) return;
     await supabase.from('drivers').delete().eq('order_date', selectedDate);
+    await supabase.from('driver_orders').delete().eq('order_date', selectedDate);
     await fetchAvailableDates();
     setDrivers([]);
   };
@@ -622,6 +695,17 @@ export default function Dashboard({ session }) {
   // ============ PAYROLL (sums the brackets you set) ============
   const prevPeriod = getPrevPeriod(startDate, endDate);
 
+  // The bracket used for a driver-day: the saved one, or else the one that matches that day's earnings.
+  // This way every day's basic pay shows and counts right away, even before the bracket is saved.
+  const bracketFor = (sapId, date, earnings) => {
+    const saved = brackets[`${sapId}__${date}`];
+    if (saved) return saved;
+    const key = suggestBracket(earnings);
+    if (!key) return null;
+    const p = BRACKETS.find((x) => x.key === key);
+    return { sap_id: sapId, order_date: date, bracket: key, basic_rate: p.basic, charge_ca: p.ca, total_pay: round2(p.basic + p.ca) };
+  };
+
   const payrollData = useMemo(() => {
     const rows = {};
     const ensure = (sapId, d = {}) => {
@@ -644,7 +728,7 @@ export default function Dashboard({ session }) {
     payrollDrivers.forEach((d) => {
       const r = ensure(d.sap_id, d);
       r.total_earnings += Number(d.total_pay || 0);
-      const b = brackets[`${d.sap_id}__${d.order_date}`];
+      const b = bracketFor(d.sap_id, d.order_date, d.total_pay);
       if (b) {
         r.basic += Number(b.basic_rate || 0);
         r.basic_ca += Number(b.charge_ca || 0);
@@ -682,7 +766,7 @@ export default function Dashboard({ session }) {
   }), [payrollData]);
 
   const unsetDays = useMemo(
-    () => payrollDrivers.filter((d) => !brackets[`${d.sap_id}__${d.order_date}`]).length,
+    () => payrollDrivers.filter((d) => !bracketFor(d.sap_id, d.order_date, d.total_pay)).length,
     [payrollDrivers, brackets]
   );
 
@@ -814,6 +898,79 @@ export default function Dashboard({ session }) {
     })), `Incentives_${incWeek}.csv`);
   };
 
+  // Export the Daily Breakdown for every date from DAILY_EXPORT_START up to the latest uploaded date.
+  // Each driver-day gets the bracket formula applied: the saved bracket if there is one,
+  // otherwise the bracket suggested from that day's earnings (same as what the screen shows).
+  const handleExportDaily = async () => {
+    if (!isAdmin) return;
+    const latest = availableDates[0];
+    if (!latest || latest < DAILY_EXPORT_START) return alert(`No data from ${formatDate(DAILY_EXPORT_START)} onward.`);
+    setExportingDaily(true);
+    try {
+      let stats = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('daily_driver_stats').select('*')
+          .gte('order_date', DAILY_EXPORT_START).lte('order_date', latest)
+          .order('order_date', { ascending: true }).order('sap_id', { ascending: true })
+          .range(from, from + 999);
+        if (error) throw error;
+        stats = stats.concat(data || []);
+        if (!data || data.length < 1000) break;
+        from += 1000;
+      }
+
+      const saved = {};
+      from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('daily_brackets').select('*')
+          .gte('order_date', DAILY_EXPORT_START).lte('order_date', latest)
+          .order('order_date', { ascending: true }).order('sap_id', { ascending: true })
+          .range(from, from + 999);
+        if (error) throw error;
+        (data || []).forEach((r) => { saved[`${r.sap_id}__${r.order_date}`] = r; });
+        if (!data || data.length < 1000) break;
+        from += 1000;
+      }
+
+      if (stats.length === 0) return alert('No data to export.');
+
+      const rows = withDirectory(stats)
+        .sort((a, b) => a.order_date.localeCompare(b.order_date) || String(a.sap_id).localeCompare(String(b.sap_id), undefined, { numeric: true }))
+        .map((d) => {
+          const b = saved[`${d.sap_id}__${d.order_date}`];
+          const key = b?.bracket || suggestBracket(d.total_pay) || 'none';
+          const preset = BRACKETS.find((x) => x.key === key);
+          const basic = b ? Number(b.basic_rate || 0) : (preset?.basic || 0);
+          const ca = b ? Number(b.charge_ca || 0) : (preset?.ca || 0);
+          return {
+            'Date': d.order_date,
+            'SAP ID': d.sap_id,
+            'Driver Name': d.full_name || 'Unknown Driver',
+            'Team': d.team,
+            'Plate': d.vehicle_plate || '',
+            'Orders': d.orders_count,
+            'Total Pay (Earnings)': Number(d.total_pay || 0).toFixed(2),
+            'Distance (km)': Number(d.distance || 0).toFixed(1),
+            'Status': d.status,
+            'Bracket': bracketLabel(key),
+            'Basic': basic.toFixed(2),
+            'CA': ca.toFixed(2),
+            'Pay': round2(basic + ca).toFixed(2),
+            'Bracket Source': b ? 'Saved' : (key === 'none' ? 'None' : 'Auto'),
+          };
+        });
+
+      downloadCSV(rows, `Daily_Breakdown_${DAILY_EXPORT_START}_to_${latest}.csv`);
+    } catch (err) {
+      alert('Export failed: ' + (err.message || err));
+    } finally {
+      setExportingDaily(false);
+    }
+  };
+
   // Driver slip: daily rows grouped by Mon-Sun week, with an automatic total for each week
   const openPayslip = (driver) => {
     const recs = payrollDrivers
@@ -821,7 +978,7 @@ export default function Dashboard({ session }) {
       .sort((a, b) => a.order_date.localeCompare(b.order_date));
     const weeksMap = {};
     recs.forEach((rec) => {
-      const b = brackets[`${rec.sap_id}__${rec.order_date}`];
+      const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
       const w = mondayOf(rec.order_date);
       if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, basic: 0, ca: 0, total: 0 };
       const wk = weeksMap[w];
@@ -833,6 +990,54 @@ export default function Dashboard({ session }) {
       wk.earnings += row.earnings; wk.basic += row.basic; wk.ca += row.ca; wk.total += row.total;
     });
     setPayslipDriver({ ...driver, weeks: Object.values(weeksMap).sort((a, b) => a.start.localeCompare(b.start)) });
+  };
+
+  // Day-by-day breakdown for one driver across the selected payroll period
+  const breakdownData = useMemo(() => {
+    if (!breakdownSap) return null;
+    const recs = payrollDrivers
+      .filter((d) => String(d.sap_id) === String(breakdownSap))
+      .sort((a, b) => a.order_date.localeCompare(b.order_date));
+    const dir = dirMap.get(String(breakdownSap).trim()) || {};
+    const first = recs[0] || {};
+    const totals = { earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0, paidDays: 0 };
+    const weeksMap = {};
+    let running = 0;
+    recs.forEach((rec) => {
+      const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
+      const row = {
+        date: rec.order_date, earnings: Number(rec.total_pay || 0), orders: Number(rec.orders_count || 0),
+        km: Number(rec.distance || 0), bracket: b?.bracket || 'none',
+        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), pay: Number(b?.total_pay || 0),
+      };
+      running += row.pay;
+      row.running = running;
+      const w = mondayOf(rec.order_date);
+      if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0 };
+      const wk = weeksMap[w];
+      wk.rows.push(row);
+      ['earnings', 'orders', 'km', 'basic', 'ca', 'pay'].forEach((f) => { wk[f] += row[f]; totals[f] += row[f]; });
+      if (row.pay > 0) totals.paidDays += 1;
+    });
+    return {
+      sap_id: breakdownSap,
+      full_name: first.full_name || dir.full_name || 'Unknown Driver',
+      team: first.team || getTeam(breakdownSap),
+      plate: first.vehicle_plate || dir.vehicle_plate || '-',
+      days: recs.length, totals,
+      weeks: Object.values(weeksMap).sort((a, b) => a.start.localeCompare(b.start)),
+    };
+  }, [breakdownSap, payrollDrivers, brackets, dirMap]);
+
+  const toggleDay = (date) => setCollapsedDays((prev) => { const n = new Set(prev); n.has(date) ? n.delete(date) : n.add(date); return n; });
+  const toggleOrder = (id) => setOpenOrders((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const orderTime = (o) => { const t = String(o.order_time || '').trim(); const parts = t.split(' '); return parts.length > 1 ? parts.slice(1).join(' ') : t; };
+
+  const openPayslipFromBreakdown = () => {
+    const row = payrollData.find((p) => String(p.sap_id) === String(breakdownSap));
+    if (!row) return;
+    setBreakdownSap(null);
+    openPayslip(row);
   };
 
   // ============ FILTERS ============
@@ -923,18 +1128,15 @@ export default function Dashboard({ session }) {
     const k = `${d.sap_id}__${d.order_date}`;
     const b = brackets[k];
     const key = b?.bracket || 'none';
-    
-    // If it's not manually set, we show the suggested one visually
     const displayKey = key === 'none' ? (suggestBracket(d.total_pay) || 'none') : key;
-    
-    // Calculate visual amounts if it hasn't saved yet
-    const visualBasic = b ? b.basic_rate : (BRACKETS.find(x => x.key === displayKey)?.basic || 0);
-    const visualCA = b ? b.charge_ca : (BRACKETS.find(x => x.key === displayKey)?.ca || 0);
-    const visualTotal = visualBasic + visualCA;
+    const preset = BRACKETS.find((x) => x.key === displayKey);
+    const visualBasic = b ? Number(b.basic_rate || 0) : (preset?.basic || 0);
+    const visualCA = b ? Number(b.charge_ca || 0) : (preset?.ca || 0);
+    const stop = (e) => e.stopPropagation();
 
     return (
       <>
-        <td>
+        <td onClick={stop}>
           <div className="rv-bracket-cell">
             <select className="rv-mini-select" value={displayKey} onChange={(e) => saveBracket(d.sap_id, d.order_date, e.target.value)} aria-label="Bracket">
               <option value="none">— none —</option>
@@ -943,17 +1145,17 @@ export default function Dashboard({ session }) {
             </select>
           </div>
         </td>
-        <td className="num">
+        <td className="num" onClick={stop}>
           {displayKey === 'custom'
-            ? <input type="number" className="rv-mini-input" value={b?.basic_rate || 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'basic_rate', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
+            ? <input type="number" className="rv-mini-input" value={b?.basic_rate ?? 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'basic_rate', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
             : displayKey !== 'none' ? peso(visualBasic) : '-'}
         </td>
-        <td className="num">
+        <td className="num" onClick={stop}>
           {displayKey === 'custom'
-            ? <input type="number" className="rv-mini-input" value={b?.charge_ca || 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'charge_ca', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
+            ? <input type="number" className="rv-mini-input" value={b?.charge_ca ?? 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'charge_ca', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
             : displayKey !== 'none' ? peso(visualCA) : '-'}
         </td>
-        <td className="num"><strong>{displayKey !== 'none' ? peso(visualTotal) : '-'}</strong></td>
+        <td className="num"><strong>{displayKey !== 'none' ? peso(visualBasic + visualCA) : '-'}</strong></td>
       </>
     );
   };
@@ -1116,6 +1318,11 @@ export default function Dashboard({ session }) {
                     <p className="rv-sub">{selectedDate ? formatDate(selectedDate) : 'No date'} · {filteredDaily.length} of {drivers.length} drivers</p>
                   </div>
                   <div className="rv-panel-tools">
+                    {isAdmin && (
+                      <button type="button" onClick={handleExportDaily} disabled={exportingDaily || availableDates.length === 0} className="rv-pill-btn primary" title={`Export every day from ${formatDate(DAILY_EXPORT_START)} to the latest date`}>
+                        <Download size={16} /> {exportingDaily ? 'Exporting...' : `Export from ${shortDate(DAILY_EXPORT_START)}`}
+                      </button>
+                    )}
                     <input type="search" className="rv-search" placeholder="Search name, SAP ID or plate…" value={dailySearch} onChange={(e) => setDailySearch(e.target.value)} />
                     <div className="rv-filter">
                       {STATUS_FILTERS.map((s) => (
@@ -1124,7 +1331,7 @@ export default function Dashboard({ session }) {
                     </div>
                   </div>
                 </div>
-                {isAdmin && <p className="rv-note">Brackets are automatically assigned based on the day's earnings. You can still manually override them using the dropdown if needed.</p>}
+                {isAdmin && <p className="rv-note">Brackets are filled in from the day's earnings the first time you open a date. You can still change them with the dropdown, and your changes are kept. <b>Click a driver</b> to see the day-by-day breakdown.</p>}
 
                 {loading ? <p className="rv-empty">Loading...</p> : drivers.length === 0 ? <p className="rv-empty">No data for {selectedDate}.</p> : filteredDaily.length === 0 ? <p className="rv-empty">No drivers match filter.</p> : (
                   <div className="rv-table-scroll">
@@ -1137,7 +1344,7 @@ export default function Dashboard({ session }) {
                       </thead>
                       <tbody>
                         {filteredDaily.map((d) => (
-                          <tr key={`${d.sap_id}-${d.order_date}`} className={rowClass(d.status)}>
+                          <tr key={`${d.sap_id}-${d.order_date}`} className={`${rowClass(d.status)} ${isAdmin ? 'rv-click' : ''}`} onClick={() => isAdmin && setBreakdownSap(d.sap_id)}>
                             <td><div className="rv-driver-cell"><strong>{d.full_name || 'Unknown Driver'}</strong>{isAdmin && editButton(d, d.vehicle_plate)}</div></td>
                             <td>{d.sap_id}</td><td>{d.team}</td><td>{d.phone || '-'}</td>
                             <td className="num">{d.orders_count}</td><td className="num">{peso(d.total_pay)}</td><td className="num">{Number(d.distance).toFixed(1)} km</td>
@@ -1169,12 +1376,6 @@ export default function Dashboard({ session }) {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
-                <button onClick={() => setPeriodPreset('1st-15th')} className="rv-filter-btn"><Clock size={14} /> 1st - 15th</button>
-                <button onClick={() => setPeriodPreset('16th-End')} className="rv-filter-btn"><Clock size={14} /> 16th - End</button>
-                <button onClick={() => setPeriodPreset('Last 7 Days')} className="rv-filter-btn"><Clock size={14} /> Last 7 Days</button>
-              </div>
-
               <div className="rv-payroll-controls">
                 <div className="rv-select">
                   <span className="rv-sub" style={{ margin: 0 }}>From</span>
@@ -1202,7 +1403,7 @@ export default function Dashboard({ session }) {
 
               <p className="rv-note">
                 Totals add up the brackets you set in Daily Breakdown. {unsetDays > 0 ? <b>{unsetDays} driver-days in this period have no bracket yet. </b> : null}
-                Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + coop + other. Click a driver to see the slip.
+                Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + coop + other. Click a driver for the day-by-day breakdown, or the printer icon for the payslip.
               </p>
 
               <div className="rv-table-scroll">
@@ -1218,7 +1419,7 @@ export default function Dashboard({ session }) {
                   <tbody>
                     {payrollLoading ? <tr><td colSpan="10" className="rv-empty">Calculating totals...</td></tr> : payrollData.length === 0 ? <tr><td colSpan="10" className="rv-empty">No data for this date range.</td></tr> : (
                       payrollData.map((d) => (
-                        <tr key={d.sap_id} className="rv-click" onClick={() => openPayslip(d)}>
+                        <tr key={d.sap_id} className="rv-click" onClick={() => setBreakdownSap(d.sap_id)}>
                           <td>{d.sap_id}</td>
                           <td><div className="rv-driver-cell"><strong>{d.full_name}</strong>{editButton(d, d.plate_number)}</div></td>
                           <td className="num"><strong>{d.days_worked}</strong></td>
@@ -1299,7 +1500,7 @@ export default function Dashboard({ session }) {
                       <div className="rv-sel-chips">
                         {groupForm.members.map((m) => (
                           <button type="button" key={m} className="rv-sel-chip" onClick={() => toggleMember(m)} title="Remove">
-                            {dirMap.get(m)?.full_name || m} <X size={12} />
+                            {combinedDirectory.find((x) => String(x.sap_id) === m)?.full_name || m} <X size={12} />
                           </button>
                         ))}
                       </div>
@@ -1453,6 +1654,154 @@ export default function Dashboard({ session }) {
         </div>{/* /rv-main */}
       </div>{/* /rv-frame */}
 
+      {/* ===================== DRIVER BREAKDOWN MODAL ===================== */}
+      {breakdownData && (
+        <div className="rv-modal-overlay" onClick={() => setBreakdownSap(null)}>
+          <div className="rv-modal wide" onClick={(e) => e.stopPropagation()}>
+            <div className="rv-modal-head">
+              <h2>Driver Breakdown</h2>
+              <button onClick={() => setBreakdownSap(null)} className="rv-edit-btn"><X size={18} /></button>
+            </div>
+
+            <div className="rv-modal-body">
+              <div className="rv-payslip-header">
+                <h3>{breakdownData.full_name}</h3>
+                <p>SAP ID: {breakdownData.sap_id} · {breakdownData.team} · Plate: {breakdownData.plate}</p>
+                <p><strong>Period:</strong> {dateRangeString}</p>
+              </div>
+
+              <div className="rv-bd-chips">
+                <div className="rv-bd-chip"><span>Days with records</span><strong>{breakdownData.days}</strong></div>
+                <div className="rv-bd-chip"><span>Days with pay</span><strong>{breakdownData.totals.paidDays}</strong></div>
+                <div className="rv-bd-chip"><span>Total earnings</span><strong>{peso(breakdownData.totals.earnings)}</strong></div>
+                <div className="rv-bd-chip hl"><span>Total pay</span><strong>{peso(breakdownData.totals.pay)}</strong></div>
+              </div>
+
+              {breakdownData.weeks.length > 0 && (
+                <div className="rv-bd-toolbar">
+                  <span>Click a day to show or hide its orders</span>
+                  <div>
+                    <button type="button" className="rv-bd-link" onClick={() => setCollapsedDays(new Set())}>Expand all</button>
+                    <button type="button" className="rv-bd-link" onClick={() => setCollapsedDays(new Set(breakdownData.weeks.flatMap((w) => w.rows.map((r) => r.date))))}>Collapse all</button>
+                  </div>
+                </div>
+              )}
+
+              {breakdownData.weeks.length === 0 ? <p className="rv-empty">No records for this driver in the selected period.</p> : (
+                <div className="rv-table-scroll">
+                  <table className="rv-table" style={{ fontSize: '12px' }}>
+                    <thead>
+                      <tr>
+                        <th>Date</th><th className="num">Orders</th><th className="num">Km</th>
+                        <th className="num">Earnings</th><th>Bracket</th>
+                        <th className="num">Basic</th><th className="num">CA</th>
+                        <th className="num">Pay</th><th className="num">Running total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {breakdownData.weeks.map((wk) => (
+                        <Fragment key={wk.start}>
+                          {wk.rows.map((r) => {
+                            const list = breakdownOrders[r.date] || [];
+                            const open = !collapsedDays.has(r.date);
+                            const listPay = list.reduce((sum, o) => sum + Number(o.total_pay || 0), 0);
+                            const listKm = list.reduce((sum, o) => sum + Number(o.distance || 0), 0);
+                            return (
+                              <Fragment key={r.date}>
+                                <tr className={`rv-click ${r.date === selectedDate ? 'sel' : ''}`} onClick={() => toggleDay(r.date)}>
+                                  <td><span className="rv-chev">{open ? '▾' : '▸'}</span> {weekdayShort(r.date)}, {formatDate(r.date)}</td>
+                                  <td className="num">{r.orders}</td>
+                                  <td className="num">{r.km.toFixed(1)}</td>
+                                  <td className="num">{peso(r.earnings)}</td>
+                                  <td>{bracketLabel(r.bracket)}</td>
+                                  <td className="num">{r.pay ? peso(r.basic) : '-'}</td>
+                                  <td className="num">{r.ca ? peso(r.ca) : '-'}</td>
+                                  <td className="num"><strong>{r.pay ? peso(r.pay) : '-'}</strong></td>
+                                  <td className="num">{peso(r.running)}</td>
+                                </tr>
+                                {open && (
+                                  <tr className="rv-orders-row">
+                                    <td colSpan="9">
+                                      {ordersLoading ? <p className="rv-orders-empty">Loading orders…</p>
+                                        : ordersError ? <p className="rv-orders-empty">Could not load orders: {ordersError}</p>
+                                        : list.length === 0 ? <p className="rv-orders-empty">No order details stored for this day. Re-upload that day's CSV to see each order.</p>
+                                        : (
+                                          <table className="rv-orders-table">
+                                            <thead>
+                                              <tr><th>#</th><th>Time</th><th>Order</th><th className="num">Km</th><th className="num">Pay</th></tr>
+                                            </thead>
+                                            <tbody>
+                                              {list.map((o) => {
+                                                const raw = o.raw && typeof o.raw === 'object' ? Object.entries(o.raw).filter(([, v]) => String(v ?? '').trim() !== '') : [];
+                                                return (
+                                                  <Fragment key={o.id}>
+                                                    <tr className="rv-click" onClick={() => toggleOrder(o.id)} title="Click for all CSV fields">
+                                                      <td>{o.seq}</td>
+                                                      <td>{orderTime(o) || '-'}</td>
+                                                      <td>{o.order_ref || '-'}</td>
+                                                      <td className="num">{Number(o.distance || 0).toFixed(1)}</td>
+                                                      <td className="num">{peso(o.total_pay)}</td>
+                                                    </tr>
+                                                    {openOrders.has(o.id) && (
+                                                      <tr className="rv-order-raw">
+                                                        <td colSpan="5">
+                                                          <div className="rv-raw-grid">
+                                                            {raw.map(([k, v]) => <div key={k}><small>{k}</small><span>{String(v)}</span></div>)}
+                                                          </div>
+                                                        </td>
+                                                      </tr>
+                                                    )}
+                                                  </Fragment>
+                                                );
+                                              })}
+                                              <tr className="rv-orders-total">
+                                                <td colSpan="3">{list.length} order{list.length === 1 ? '' : 's'} = day earnings</td>
+                                                <td className="num">{listKm.toFixed(1)}</td>
+                                                <td className="num">{peso(listPay)}</td>
+                                              </tr>
+                                            </tbody>
+                                          </table>
+                                        )}
+                                      {!ordersLoading && !ordersError && list.length > 0 && list.length !== r.orders && (
+                                        <p className="rv-orders-empty">Only {list.length} of {r.orders} orders are stored for this day. Re-upload its CSV to refresh.</p>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )}
+                              </Fragment>
+                            );
+                          })}
+                        </Fragment>
+                      ))}
+                      <tr className="rv-week-row rv-total-row">
+                        <td>Period total</td>
+                        <td className="num">{breakdownData.totals.orders}</td>
+                        <td className="num">{breakdownData.totals.km.toFixed(1)}</td>
+                        <td className="num">{peso(breakdownData.totals.earnings)}</td>
+                        <td />
+                        <td className="num">{peso(breakdownData.totals.basic)}</td>
+                        <td className="num">{peso(breakdownData.totals.ca)}</td>
+                        <td className="num">{peso(breakdownData.totals.pay)}</td>
+                        <td />
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <p className="rv-note" style={{ marginTop: 14 }}>
+                Total pay <b>{peso(breakdownData.totals.pay)}</b> = Basic <b>{peso(breakdownData.totals.basic)}</b> + Charge to CA <b>{peso(breakdownData.totals.ca)}</b>, from <b>{breakdownData.totals.paidDays}</b> day(s) with a bracket. Days showing "—" have no bracket yet.
+              </p>
+            </div>
+
+            <div className="rv-modal-foot" style={{ gap: 10 }}>
+              <button onClick={openPayslipFromBreakdown} className="rv-pill-btn"><Wallet size={16} /> Open payslip</button>
+              <button onClick={() => window.print()} className="rv-pill-btn primary"><Printer size={16} /> Print</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ===================== PAYSLIP MODAL ===================== */}
       {payslipDriver && (
         <div className="rv-modal-overlay" onClick={() => setPayslipDriver(null)}>
@@ -1491,14 +1840,6 @@ export default function Dashboard({ session }) {
                           <td className="num">{r.total ? peso(r.total) : '-'}</td>
                         </tr>
                       ))}
-                      <tr className="rv-week-row">
-                        <td>Week {shortDate(wk.start)} - {shortDate(addDays(wk.start, 6))}</td>
-                        <td className="num">{peso(wk.earnings)}</td>
-                        <td />
-                        <td className="num">{peso(wk.basic)}</td>
-                        <td className="num">{peso(wk.ca)}</td>
-                        <td className="num">{peso(wk.total)}</td>
-                      </tr>
                     </Fragment>
                   ))}
                 </tbody>

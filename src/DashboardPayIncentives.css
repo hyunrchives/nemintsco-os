@@ -73,3 +73,40 @@
   .rv-group-form { grid-template-columns: 1fr; }
   .rv-bracket-cell { flex-direction: column; align-items: flex-start; gap: 2px; }
 }
+
+/* ---------- Driver breakdown modal ---------- */
+.rv-modal.wide { max-width: 880px; }
+.rv-bd-chips { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.rv-bd-chip { display: flex; flex-direction: column; gap: 4px; padding: 10px 14px; border-radius: 14px; background: #f4f6fa; border: 1px solid #e5e7eb; }
+.rv-bd-chip span { font-size: 12px; color: #6f7f9b; }
+.rv-bd-chip strong { font-size: 18px; font-weight: 500; color: #12203a; }
+.rv-bd-chip.hl { background: #12408a; border-color: #12408a; }
+.rv-bd-chip.hl span { color: rgba(255,255,255,.75); }
+.rv-bd-chip.hl strong { color: #fff; }
+.rv-modal .rv-table tr.sel td { background: #fff4cc; }
+.rv-modal .rv-total-row td { background: #12408a; color: #fff; }
+.rv-modal .rv-table tbody tr.rv-total-row:hover td { background: #12408a; }
+
+/* ---------- Orders inside the driver breakdown ---------- */
+.rv-modal .rv-click { cursor: pointer; }
+.rv-chev { display: inline-block; width: 14px; color: #6f7f9b; }
+.rv-bd-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 8px; font-size: 12px; color: #6f7f9b; }
+.rv-bd-link { border: none; background: none; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; color: #12408a; padding: 2px 6px; }
+.rv-bd-link:hover { text-decoration: underline; }
+.rv-modal .rv-table tr.rv-orders-row td { background: #f9fafb; padding: 4px 14px 12px 34px; border-radius: 0; white-space: normal; }
+.rv-orders-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.rv-orders-table th { text-align: left; padding: 6px 10px; font-size: 11px; font-weight: 500; color: #6f7f9b; border-bottom: 1px solid #e5e7eb; }
+.rv-orders-table td { padding: 7px 10px; border-bottom: 1px solid #eef0f4; background: transparent; white-space: nowrap; }
+.rv-orders-table th.num, .rv-orders-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.rv-modal .rv-orders-table td { background: transparent; border-radius: 0; }
+.rv-modal .rv-orders-table tr.rv-click:hover td { background: #eef1f7; }
+.rv-modal .rv-orders-table tr.rv-orders-total td { font-weight: 600; border-bottom: none; background: transparent; color: #12203a; }
+.rv-orders-empty { margin: 6px 0 0; font-size: 12px; color: #6f7f9b; }
+.rv-modal .rv-orders-table tr.rv-order-raw td { background: #fff; white-space: normal; }
+.rv-raw-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; padding: 6px 0; }
+.rv-raw-grid div { display: flex; flex-direction: column; min-width: 0; }
+.rv-raw-grid small { font-size: 10px; color: #6f7f9b; }
+.rv-raw-grid span { font-size: 12px; color: #12203a; overflow-wrap: anywhere; }
+.rv-modal .rv-pill-btn:not(.primary) {
+  background: #fff; color: #12408a; border: 1px solid #c9d3ea;
+}
