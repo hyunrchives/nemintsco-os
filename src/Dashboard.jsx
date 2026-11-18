@@ -932,7 +932,7 @@ export default function Dashboard({ session }) {
 
   // Earnings are positive, deductions are negative, Cash Advance and Coop Share each have their own column.
   // Values are real numbers (not strings) so Excel can sum them.
-  const buildPayrollExportRow = (d) => ({
+  const buildPayrollExportRow = (d, withIncentive = false) => ({
     'SAP ID': d.sap_id,
     'NAME': d.full_name,
     '#DAYS': d.days_worked,
@@ -942,6 +942,10 @@ export default function Dashboard({ session }) {
     'BASIC': pos(d.basic),
     'ALLOWABLE CA (not in Net Pay)': pos(d.basic_ca),
     'TOTAL PAY (+)': pos(d.total_basic),
+    ...(withIncentive ? {
+      'INCENTIVE (+)': pos(d.incentive),
+      'TOTAL PAY + INCENTIVE (+)': pos(d.total_plus_incentive),
+    } : {}),
 
     // ---------- NEGATIVE (deductions) ----------
     'CA - Prev Period (-)': neg(d.prev_ca),
@@ -964,7 +968,7 @@ export default function Dashboard({ session }) {
     if (!isAdmin) return;
     if (payrollData.length === 0) return alert('No data to export.');
     downloadCSV(
-      payrollData.map((d) => ({ ...buildPayrollExportRow(d), 'Date Range': dateRangeString, 'Status': periodStatus })),
+      payrollData.map((d) => ({ ...buildPayrollExportRow(d, true), 'Date Range': dateRangeString, 'Status': periodStatus })),
       `Payroll_${periodStatus}_${startDate}_to_${endDate}.csv`
     );
   };
