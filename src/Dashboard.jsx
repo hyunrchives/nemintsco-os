@@ -58,6 +58,10 @@ const individualRate = (earnings) => {
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+// ---------- signed number helpers for exports ----------
+const pos = (n) => round2(n);
+const neg = (n) => (Number(n) ? -round2(n) : 0); // avoids "-0"
+
 // ---------- date helpers ----------
 const toISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const addDays = (s, n) => { const d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + n); return toISO(d); };
@@ -706,6 +710,27 @@ export default function Dashboard({ session }) {
     return { sap_id: sapId, order_date: date, bracket: key, basic_rate: p.basic, charge_ca: p.ca, total_pay: round2(p.basic + p.ca) };
   };
 
+  // ONE shared source of per-day rows: used by Print All Payslips, the payslip modal and the breakdown modal
+  const driverDayRows = (sapId) =>
+    payrollDrivers
+      .filter((r) => String(r.sap_id) === String(sapId))
+      .sort((a, b) => a.order_date.localeCompare(b.order_date))
+      .map((rec) => {
+        const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
+        const basic = Number(b?.basic_rate || 0);
+        return {
+          date: rec.order_date,
+          earnings: Number(rec.total_pay || 0),
+          orders: Number(rec.orders_count || 0),
+          km: Number(rec.distance || 0),
+          bracket: b?.bracket || 'none',
+          basic,
+          ca: Number(b?.charge_ca || 0),
+          pay: basic,   // Allowable CA excluded
+          total: basic, // alias used by the payslip modal
+        };
+      });
+
   const payrollData = useMemo(() => {
     const rows = {};
     const ensure = (sapId, d = {}) => {
@@ -738,7 +763,7 @@ export default function Dashboard({ session }) {
         r.basic += Number(b.basic_rate || 0);
         r.basic_ca += Number(b.charge_ca || 0);
         r.total_basic += Number(b.basic_rate || 0); // EXCLUDED Allowable CA from final pay
-        if (Number(b.total_pay) > 0) r.days_worked += 1;
+        if (Number(b.basic_rate) > 0) r.days_worked += 1; // same rule as the breakdown ("days with pay")
       }
       if (d.vehicle_plate) r.plate_number = d.vehicle_plate;
     });
@@ -864,31 +889,43 @@ export default function Dashboard({ session }) {
     document.body.removeChild(link);
   };
 
+  // Earnings are positive, deductions are negative, Cash Advance and Coop Share each have their own column.
+  // Values are real numbers (not strings) so Excel can sum them.
+  const buildPayrollExportRow = (d) => ({
+    'SAP ID': d.sap_id,
+    'NAME': d.full_name,
+    '#DAYS': d.days_worked,
+
+    // ---------- POSITIVE (earnings) ----------
+    'Total Earnings': pos(d.total_earnings),
+    'BASIC': pos(d.basic),
+    'ALLOWABLE CA (not in Net Pay)': pos(d.basic_ca),
+    'TOTAL PAY (+)': pos(d.total_basic),
+
+    // ---------- NEGATIVE (deductions) ----------
+    'CA - Prev Period (-)': neg(d.prev_ca),
+    'CA - Partial Payment (-)': neg(d.partial_ca),
+    'CASH ADVANCE TOTAL (-)': neg(d.prev_ca + d.partial_ca),
+    'COOP SHARE (-)': neg(d.coop_share),
+    'SSS (-)': neg(d.sss),
+    'Pag-Ibig (-)': neg(d.pagibig),
+    'Philhealth (-)': neg(d.philhealth),
+    'SSS Loan (-)': neg(d.sss_loan),
+    'Pag-Ibig Loan (-)': neg(d.pagibig_loan),
+    'Other Deductions (-)': neg(d.other_deductions),
+    'TOTAL DEDUCTIONS (-)': neg(d.total_deductions),
+
+    // ---------- RESULT ----------
+    'NET PAY': pos(d.net_pay),
+  });
+
   const handleExportCSV = () => {
     if (!isAdmin) return;
     if (payrollData.length === 0) return alert('No data to export.');
-    downloadCSV(payrollData.map((d) => ({
-      'SAP ID': d.sap_id,
-      'NAME': d.full_name,
-      '#DAYS': d.days_worked,
-      'Total Earnings': d.total_earnings.toFixed(2),
-      'BASIC': d.basic.toFixed(2),
-      'ALLOWABLE CA': d.basic_ca.toFixed(2),
-      'TOTAL': d.total_basic.toFixed(2),
-      'Prev Period CA': d.prev_ca.toFixed(2),
-      'CA Partial Payment': d.partial_ca.toFixed(2),
-      'Coop Share': d.coop_share.toFixed(2),
-      'SSS': d.sss.toFixed(2),
-      'Pag-Ibig': d.pagibig.toFixed(2),
-      'Philhealth': d.philhealth.toFixed(2),
-      'SSS Loan': d.sss_loan.toFixed(2),
-      'Pag-Ibig Loan': d.pagibig_loan.toFixed(2),
-      'Other Deductions': d.other_deductions.toFixed(2),
-      'Total Deductions': d.total_deductions.toFixed(2),
-      'Net Pay': d.net_pay.toFixed(2),
-      'Date Range': dateRangeString,
-      'Status': periodStatus,
-    })), `Payroll_${periodStatus}_${startDate}_to_${endDate}.csv`);
+    downloadCSV(
+      payrollData.map((d) => ({ ...buildPayrollExportRow(d), 'Date Range': dateRangeString, 'Status': periodStatus })),
+      `Payroll_${periodStatus}_${startDate}_to_${endDate}.csv`
+    );
   };
 
   const handleExportPayslipsCSV = () => {
@@ -896,28 +933,14 @@ export default function Dashboard({ session }) {
     if (payrollData.length === 0) return alert('No data to export.');
 
     const rows = payrollData.map((d) => {
+      const { 'SAP ID': sapId, 'NAME': _name, ...rest } = buildPayrollExportRow(d);
       return {
-        'SAP ID': d.sap_id,
+        'SAP ID': sapId,
         'Driver Name': d.full_name,
         'Plate': d.plate_number,
         'Period': dateRangeString,
         'Status': periodStatus,
-        'Days with Basic Pay': d.days_worked,
-        'Total Earnings': d.total_earnings.toFixed(2),
-        'Basic': d.basic.toFixed(2),
-        'Allowable CA': d.basic_ca.toFixed(2),
-        'Total Pay': d.total_basic.toFixed(2),
-        'Prev Period CA': d.prev_ca.toFixed(2),
-        'CA Partial Payment': d.partial_ca.toFixed(2),
-        'Coop Share': d.coop_share.toFixed(2),
-        'SSS': d.sss.toFixed(2),
-        'Pag-Ibig': d.pagibig.toFixed(2),
-        'Philhealth': d.philhealth.toFixed(2),
-        'SSS Loan': d.sss_loan.toFixed(2),
-        'Pag-Ibig Loan': d.pagibig_loan.toFixed(2),
-        'Other Deductions': d.other_deductions.toFixed(2),
-        'Total Deductions': d.total_deductions.toFixed(2),
-        'Net Pay': d.net_pay.toFixed(2),
+        ...rest,
       };
     });
 
@@ -934,19 +957,13 @@ export default function Dashboard({ session }) {
     const money = (n) => `₱${Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
     const slips = payrollData.map((d) => {
-      const recs = payrollDrivers
-        .filter((r) => r.sap_id === d.sap_id)
-        .sort((a, b) => a.order_date.localeCompare(b.order_date));
+      const recs = driverDayRows(d.sap_id); // same rows as the payslip modal and the breakdown
 
-      const rowHtml = (rec) => {
-        const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
-        const pay = Number(b?.basic_rate || 0); // CA EXCLUDED
-        return `<tr>
-          <td>${esc(shortDate(rec.order_date))}</td>
-          <td class="num">${money(rec.total_pay)}</td>
-          <td class="num">${pay ? money(pay) : '-'}</td>
+      const rowHtml = (rec) => `<tr>
+          <td>${esc(shortDate(rec.date))}</td>
+          <td class="num">${money(rec.earnings)}</td>
+          <td class="num">${rec.pay ? money(rec.pay) : '-'}</td>
         </tr>`;
-      };
       const miniTable = (list) => `<table>
         <thead><tr><th>Date</th><th class="num">Earnings</th><th class="num">Pay</th></tr></thead>
         <tbody>${list.map(rowHtml).join('')}</tbody>
@@ -1130,47 +1147,28 @@ export default function Dashboard({ session }) {
 
   // ============ PAYSLIP / BREAKDOWN ============
   const openPayslip = (driver) => {
-    const recs = payrollDrivers
-      .filter((d) => d.sap_id === driver.sap_id)
-      .sort((a, b) => a.order_date.localeCompare(b.order_date));
     const weeksMap = {};
-    recs.forEach((rec) => {
-      const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
-      const w = mondayOf(rec.order_date);
-      if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, basic: 0, ca: 0, total: 0 };
-      const wk = weeksMap[w];
-      const row = {
-        date: rec.order_date, earnings: Number(rec.total_pay || 0), bracket: b?.bracket || 'none',
-        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), 
-        total: Number(b?.basic_rate || 0), // CA EXCLUDED
-      };
-      wk.rows.push(row);
-      wk.earnings += row.earnings; wk.basic += row.basic; wk.ca += row.ca; wk.total += row.total;
+    driverDayRows(driver.sap_id).forEach((row) => {
+      const w = mondayOf(row.date);
+      if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [] };
+      weeksMap[w].rows.push(row);
     });
     setPayslipDriver({ ...driver, weeks: Object.values(weeksMap).sort((a, b) => a.start.localeCompare(b.start)) });
   };
 
   const breakdownData = useMemo(() => {
     if (!breakdownSap) return null;
-    const recs = payrollDrivers
-      .filter((d) => String(d.sap_id) === String(breakdownSap))
-      .sort((a, b) => a.order_date.localeCompare(b.order_date));
+    const dayRows = driverDayRows(breakdownSap);
     const dir = dirMap.get(String(breakdownSap).trim()) || {};
-    const first = recs[0] || {};
+    const first = payrollDrivers.find((d) => String(d.sap_id) === String(breakdownSap)) || {};
     const totals = { earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0, paidDays: 0 };
     const weeksMap = {};
     let running = 0;
-    recs.forEach((rec) => {
-      const b = bracketFor(rec.sap_id, rec.order_date, rec.total_pay);
-      const rowTotal = Number(b?.basic_rate || 0); // CA EXCLUDED
-      const row = {
-        date: rec.order_date, earnings: Number(rec.total_pay || 0), orders: Number(rec.orders_count || 0),
-        km: Number(rec.distance || 0), bracket: b?.bracket || 'none',
-        basic: Number(b?.basic_rate || 0), ca: Number(b?.charge_ca || 0), pay: rowTotal,
-      };
+    dayRows.forEach((src) => {
+      const row = { ...src };
       running += row.pay;
       row.running = running;
-      const w = mondayOf(rec.order_date);
+      const w = mondayOf(row.date);
       if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0 };
       const wk = weeksMap[w];
       wk.rows.push(row);
@@ -1182,10 +1180,13 @@ export default function Dashboard({ session }) {
       full_name: first.full_name || dir.full_name || 'Unknown Driver',
       team: first.team || getTeam(breakdownSap),
       plate: first.vehicle_plate || dir.vehicle_plate || '-',
-      days: recs.length, totals,
+      days: dayRows.length, totals,
       weeks: Object.values(weeksMap).sort((a, b) => a.start.localeCompare(b.start)),
     };
   }, [breakdownSap, payrollDrivers, brackets, dirMap]);
+
+  // The same payroll row the slip uses, so Deductions and Net Pay match exactly
+  const slipRow = breakdownSap ? payrollData.find((p) => String(p.sap_id) === String(breakdownSap)) : null;
 
   const toggleDay = (date) => setCollapsedDays((prev) => { const n = new Set(prev); n.has(date) ? n.delete(date) : n.add(date); return n; });
   const toggleOrder = (id) => setOpenOrders((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -1769,18 +1770,18 @@ export default function Dashboard({ session }) {
                   <label className="rv-field wide"><span>Full name</span><input type="text" placeholder="Full name" value={newDriver.full_name} onChange={(e) => setNewDriver({ ...newDriver, full_name: e.target.value })} required /></label>
                   <label className="rv-field"><span>Phone number</span><input type="text" placeholder="09xx xxx xxxx" value={newDriver.phone} onChange={(e) => setNewDriver({ ...newDriver, phone: e.target.value })} /></label>
                   <label className="rv-field"><span>Plate number</span><input type="text" placeholder="ABC 1234" value={newDriver.vehicle_plate} onChange={(e) => setNewDriver({ ...newDriver, vehicle_plate: e.target.value })} /></label>
-                  
+
                   <label className="rv-field"><span>CA partial payment (₱)</span><input type="number" placeholder="0.00" value={newDriver.cash_advance} onChange={(e) => setNewDriver({ ...newDriver, cash_advance: e.target.value })} /></label>
                   <label className="rv-field"><span>Coop Share (₱)</span><input type="number" placeholder="0.00" value={newDriver.coop_share} onChange={(e) => setNewDriver({ ...newDriver, coop_share: e.target.value })} /></label>
-                  
+
                   <label className="rv-field"><span>SSS (₱)</span><input type="number" placeholder="0.00" value={newDriver.sss} onChange={(e) => setNewDriver({ ...newDriver, sss: e.target.value })} /></label>
                   <label className="rv-field"><span>Pag-Ibig (₱)</span><input type="number" placeholder="0.00" value={newDriver.pagibig} onChange={(e) => setNewDriver({ ...newDriver, pagibig: e.target.value })} /></label>
                   <label className="rv-field"><span>Philhealth (₱)</span><input type="number" placeholder="0.00" value={newDriver.philhealth} onChange={(e) => setNewDriver({ ...newDriver, philhealth: e.target.value })} /></label>
                   <label className="rv-field"><span>SSS Loan (₱)</span><input type="number" placeholder="0.00" value={newDriver.sss_loan} onChange={(e) => setNewDriver({ ...newDriver, sss_loan: e.target.value })} /></label>
                   <label className="rv-field"><span>Pag-Ibig Loan (₱)</span><input type="number" placeholder="0.00" value={newDriver.pagibig_loan} onChange={(e) => setNewDriver({ ...newDriver, pagibig_loan: e.target.value })} /></label>
-                  
+
                   <label className="rv-field"><span>Other Deductions (₱)</span><input type="number" placeholder="0.00" value={newDriver.other_deductions} onChange={(e) => setNewDriver({ ...newDriver, other_deductions: e.target.value })} /></label>
-                  
+
                   <button type="submit" className="rv-pill-btn primary rv-form-submit" disabled={addingDriver}>{addingDriver ? 'Saving...' : (editingSapId ? 'Update Driver' : 'Add Driver')}</button>
                 </form>
               </section>
@@ -1846,7 +1847,21 @@ export default function Dashboard({ session }) {
                 <div className="rv-bd-chip"><span>Days with pay</span><strong>{breakdownData.totals.paidDays}</strong></div>
                 <div className="rv-bd-chip"><span>Total earnings</span><strong>{peso(breakdownData.totals.earnings)}</strong></div>
                 <div className="rv-bd-chip hl"><span>Total pay</span><strong>{peso(breakdownData.totals.pay)}</strong></div>
+                {slipRow && (
+                  <>
+                    <div className="rv-bd-chip"><span>Deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.total_deductions)}</strong></div>
+                    <div className="rv-bd-chip hl"><span>Net pay</span><strong>{peso(slipRow.net_pay)}</strong></div>
+                  </>
+                )}
               </div>
+
+              {slipRow && (
+                <div className="rv-bd-chips" style={{ marginTop: 8 }}>
+                  <div className="rv-bd-chip"><span>Cash advance</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.prev_ca + slipRow.partial_ca)}</strong></div>
+                  <div className="rv-bd-chip"><span>Coop share</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.coop_share)}</strong></div>
+                  <div className="rv-bd-chip"><span>Other deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.sss + slipRow.pagibig + slipRow.philhealth + slipRow.sss_loan + slipRow.pagibig_loan + slipRow.other_deductions)}</strong></div>
+                </div>
+              )}
 
               {breakdownData.weeks.length > 0 && (
                 <div className="rv-bd-toolbar">
@@ -1962,6 +1977,7 @@ export default function Dashboard({ session }) {
 
               <p className="rv-note" style={{ marginTop: 14 }}>
                 Total pay <b>{peso(breakdownData.totals.pay)}</b> = Basic <b>{peso(breakdownData.totals.basic)}</b> (Allowable CA excluded), from <b>{breakdownData.totals.paidDays}</b> day(s) with a bracket. Days showing "—" have no bracket yet.
+                {slipRow ? <> Net pay <b>{peso(slipRow.net_pay)}</b> = Total pay − Deductions <b>{peso(slipRow.total_deductions)}</b>, the same figures printed on the payslip.</> : null}
               </p>
             </div>
 
@@ -1999,6 +2015,10 @@ export default function Dashboard({ session }) {
                 <div style={{ flex: 1, background: '#f3f4f6', padding: '12px', borderRadius: '8px' }}>
                   <small style={{ color: '#555' }}>Allowable CA</small>
                   <h3 style={{ margin: 0 }}>{peso(payslipDriver.basic_ca)}</h3>
+                </div>
+                <div style={{ flex: 1, background: '#f3f4f6', padding: '12px', borderRadius: '8px' }}>
+                  <small style={{ color: '#555' }}>Total Pay</small>
+                  <h3 style={{ margin: 0 }}>{peso(payslipDriver.total_basic)}</h3>
                 </div>
               </div>
               <p style={{ fontSize: '11px', color: '#666', marginTop: '-10px', marginBottom: '20px' }}>Note: Basic CA is not included in Net pay computations.</p>
