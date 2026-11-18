@@ -82,6 +82,134 @@ const DAILY_EXPORT_START = '2026-10-28';
 const EMPTY_DRIVER = { sap_id: '', full_name: '', phone: '', vehicle_plate: '', cash_advance: 0, coop_share: 0, other_deductions: 0, sss: 0, pagibig: 0, philhealth: 0, sss_loan: 0, pagibig_loan: 0 };
 const EMPTY_GROUP = { id: null, name: '', captain: '', members: [] };
 
+// ============ STANDALONE PAYSLIP HTML BUILDER ============
+// Produces a self-contained A4 document for one driver. Used by both the
+// single-slip printer and the "Print All Payslips" batch printer, and by the
+// in-app payslip modal's print button so "Save as PDF" always captures the
+// FULL payslip, not a screenshot of the dashboard.
+const buildPayslipSectionHtml = (driver, dayRows, dateRangeString, periodStatus, esc, money, shortDate) => {
+  const rowHtml = (rec) => `<tr>
+      <td>${esc(shortDate(rec.date))}</td>
+      <td class="num">${money(rec.earnings)}</td>
+      <td class="num">${rec.pay ? money(rec.pay) : '-'}</td>
+    </tr>`;
+  const miniTable = (list) => `<table>
+      <thead><tr><th>Date</th><th class="num">Earnings</th><th class="num">Pay</th></tr></thead>
+      <tbody>${list.map(rowHtml).join('')}</tbody>
+    </table>`;
+
+  const half = Math.ceil(dayRows.length / 2);
+  const left = dayRows.slice(0, half);
+  const right = dayRows.slice(half);
+
+  return `<section class="slip">
+    <div class="slip-head">
+      <div>
+        <b class="name">${esc(driver.full_name)}</b>
+        <span>SAP ${esc(driver.sap_id)} · ${esc(driver.plate_number)}</span>
+      </div>
+      <div><span>NEMINTSCO - GSM · ${esc(dateRangeString)} · ${esc(periodStatus)}</span></div>
+    </div>
+    <div class="slip-body">
+      <div class="zone days">
+        ${miniTable(left)}
+        ${right.length ? miniTable(right) : '<div></div>'}
+      </div>
+      <div class="zone summary">
+        <div class="row"><span>Days w/ basic pay</span><b>${driver.days_worked}</b></div>
+        <div class="row"><span>Total earnings</span><b>${money(driver.total_earnings)}</b></div>
+        <div class="row"><span>Basic</span><b>${money(driver.basic)}</b></div>
+        <div class="row"><span>Allowable CA</span><b>${money(driver.basic_ca)}</b></div>
+        <div class="row strong"><span>Total Pay</span><b>${money(driver.total_basic)}</b></div>
+        <div class="sig">
+          <div>Received: <span class="line">${esc(driver.full_name)}</span></div>
+          <div>Approved: <span class="line"></span></div>
+        </div>
+      </div>
+      <div class="zone deduct">
+        <div class="row"><span>Cash Balance</span><b>-${money(driver.prev_ca + driver.partial_ca)}</b></div>
+        ${driver.sss > 0 ? `<div class="row"><span>SSS</span><b>-${money(driver.sss)}</b></div>` : ''}
+        ${driver.pagibig > 0 ? `<div class="row"><span>Pag-Ibig</span><b>-${money(driver.pagibig)}</b></div>` : ''}
+        ${driver.philhealth > 0 ? `<div class="row"><span>Philhealth</span><b>-${money(driver.philhealth)}</b></div>` : ''}
+        ${driver.sss_loan > 0 ? `<div class="row"><span>SSS Loan</span><b>-${money(driver.sss_loan)}</b></div>` : ''}
+        ${driver.pagibig_loan > 0 ? `<div class="row"><span>Pag-Ibig Loan</span><b>-${money(driver.pagibig_loan)}</b></div>` : ''}
+        ${driver.coop_share > 0 ? `<div class="row"><span>Coop Share</span><b>-${money(driver.coop_share)}</b></div>` : ''}
+        ${driver.other_deductions > 0 ? `<div class="row"><span>Other Deductions</span><b>-${money(driver.other_deductions)}</b></div>` : ''}
+        <div class="row total-ded"><span>Total Deductions</span><b>-${money(driver.total_deductions)}</b></div>
+        <div class="row net"><span>NET PAY</span><b>${money(driver.net_pay)}</b></div>
+      </div>
+    </div>
+  </section>`;
+};
+
+const PAYSLIP_PRINT_CSS = `
+  * { box-sizing: border-box; }
+  @page { size: A4 portrait; margin: 6mm; }
+  body { font-family: Arial, sans-serif; margin: 0; color: #000; font-size: 7pt; }
+  .page { height: 280mm; page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+
+  .slip { height: 56mm; overflow: hidden; padding: 1.5mm 2mm; border-bottom: 1px dashed #888; page-break-inside: avoid; }
+  .slip:last-child { border-bottom: none; }
+
+  .slip-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #000; padding-bottom: 1mm; margin-bottom: 1.5mm; }
+  .slip-head .name { font-size: 10pt; text-transform: uppercase; margin-right: 6px; }
+  .slip-head span { font-size: 7pt; color: #333; }
+
+  .slip-body { display: flex; gap: 3mm; }
+  .zone.days { flex: 0 0 98mm; display: flex; gap: 2mm; }
+  .zone.days > * { flex: 1; }
+  .zone.summary { flex: 0 0 47mm; display: flex; flex-direction: column; }
+  .zone.deduct { flex: 1; display: flex; flex-direction: column; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 6.3pt; }
+  th, td { border: 1px solid #ccc; padding: 0.3mm 1mm; line-height: 1.25; text-align: left; }
+  th { background: #f1f1f1; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .row { display: flex; justify-content: space-between; padding: 0.4mm 0; font-size: 7pt; gap: 4px; }
+  .row.strong { border-top: 1px solid #000; font-weight: bold; margin-top: 0.5mm; }
+  .row.total-ded { border-top: 1px solid #000; font-weight: bold; margin-top: 1mm; }
+  .row.net { border-top: 2px solid #000; font-weight: bold; font-size: 9pt; margin-top: 0.5mm; }
+
+  .sig { margin-top: auto; font-size: 6.5pt; display: flex; flex-direction: column; gap: 2.5mm; padding-top: 3mm; }
+  .line { border-bottom: 1px solid #000; padding: 0 3px; font-weight: bold; display: inline-block; min-width: 24mm; }
+`;
+
+// Single-slip A4 page (uses a larger, more readable layout than the batch 5-up)
+const PAYSLIP_SINGLE_CSS = `
+  * { box-sizing: border-box; }
+  @page { size: A4 portrait; margin: 10mm; }
+  body { font-family: Arial, Helvetica, sans-serif; margin: 0; color: #000; font-size: 10pt; }
+  .slip { width: 100%; padding: 4mm; }
+
+  .slip-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    border-bottom: 2px solid #000; padding-bottom: 2mm; margin-bottom: 3mm;
+  }
+  .slip-head .name { font-size: 14pt; text-transform: uppercase; margin-right: 8px; }
+  .slip-head span { font-size: 9pt; color: #333; }
+
+  .slip-body { display: flex; gap: 4mm; align-items: flex-start; }
+  .zone.days { flex: 1 1 auto; display: flex; gap: 2mm; }
+  .zone.days > * { flex: 1; }
+  .zone.summary { flex: 0 0 55mm; display: flex; flex-direction: column; }
+  .zone.deduct { flex: 0 0 55mm; display: flex; flex-direction: column; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 8pt; }
+  th, td { border: 1px solid #ccc; padding: 1mm 1.5mm; line-height: 1.3; text-align: left; }
+  th { background: #f1f1f1; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .row { display: flex; justify-content: space-between; padding: 0.6mm 0; font-size: 9pt; gap: 4px; }
+  .row.strong { border-top: 1px solid #000; font-weight: bold; margin-top: 1mm; }
+  .row.total-ded { border-top: 1px solid #000; font-weight: bold; margin-top: 1.5mm; }
+  .row.net { border-top: 2px solid #000; font-weight: bold; font-size: 12pt; margin-top: 1mm; }
+
+  .sig { margin-top: 12mm; font-size: 8pt; display: flex; flex-direction: column; gap: 6mm; }
+  .line { border-bottom: 1px solid #000; padding: 0 3px; font-weight: bold; display: inline-block; min-width: 30mm; }
+`;
+
 export default function Dashboard({ session }) {
   const [rawDrivers, setDrivers] = useState([]);
   const [rawPayrollDrivers, setPayrollDrivers] = useState([]);
@@ -992,69 +1120,34 @@ export default function Dashboard({ session }) {
     downloadCSV(rows, `Payslips_${periodStatus}_${startDate}_to_${endDate}.csv`);
   };
 
-  // ============ PRINT ALL PAYSLIPS (5 per A4 page) ============
+  // ============ PRINT PAYSLIPS ============
+  // Renders a COMPLETE standalone A4 document in a new window, then prints it.
+  // "Save as PDF" in the print dialog therefore captures the full payslip(s),
+  // not a screenshot of the dashboard page.
+  const escHtml = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const moneyFmt = (n) => `₱${Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const printPayslip = (driver) => {
+    if (!isAdmin) return;
+    if (!driver) return;
+    const dayRows = driverDayRows(driver.sap_id);
+    const body = buildPayslipSectionHtml(driver, dayRows, dateRangeString, periodStatus, escHtml, moneyFmt, shortDate);
+    const win = window.open('', '_blank');
+    win.document.write(`<!DOCTYPE html><html><head><title>Payslip - ${escHtml(driver.full_name)}</title>
+      <style>${PAYSLIP_SINGLE_CSS}</style></head><body>${body}</body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => { win.print(); }, 400);
+  };
+
   const printAllPayslips = () => {
     if (!isAdmin) return;
     if (payrollData.length === 0) return alert('No data to print.');
 
     const SLIPS_PER_PAGE = 5;
-    const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    const money = (n) => `₱${Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
     const slips = payrollData.map((d) => {
-      const recs = driverDayRows(d.sap_id); // same rows as the payslip modal and the breakdown
-
-      const rowHtml = (rec) => `<tr>
-          <td>${esc(shortDate(rec.date))}</td>
-          <td class="num">${money(rec.earnings)}</td>
-          <td class="num">${rec.pay ? money(rec.pay) : '-'}</td>
-        </tr>`;
-      const miniTable = (list) => `<table>
-        <thead><tr><th>Date</th><th class="num">Earnings</th><th class="num">Pay</th></tr></thead>
-        <tbody>${list.map(rowHtml).join('')}</tbody>
-      </table>`;
-
-      const half = Math.ceil(recs.length / 2);
-      const left = recs.slice(0, half);
-      const right = recs.slice(half);
-
-      return `<section class="slip">
-        <div class="slip-head">
-          <div><b class="name">${esc(d.full_name)}</b> <span>SAP ${esc(d.sap_id)} · ${esc(d.plate_number)}</span></div>
-          <div><span>NEMINTSCO - GSM · ${esc(dateRangeString)} · ${esc(periodStatus)}</span></div>
-        </div>
-        <div class="slip-body">
-          <div class="zone days">
-            ${miniTable(left)}
-            ${right.length ? miniTable(right) : '<div></div>'}
-          </div>
-
-          <div class="zone summary">
-            <div class="row"><span>Days w/ basic pay</span><b>${d.days_worked}</b></div>
-            <div class="row"><span>Total earnings</span><b>${money(d.total_earnings)}</b></div>
-            <div class="row"><span>Basic</span><b>${money(d.basic)}</b></div>
-            <div class="row"><span>Allowable CA</span><b>${money(d.basic_ca)}</b></div>
-            <div class="row strong"><span>Total Pay</span><b>${money(d.total_basic)}</b></div>
-            <div class="sig">
-              <div>Received: <span class="line">${esc(d.full_name)}</span></div>
-              <div>Approved: <span class="line"></span></div>
-            </div>
-          </div>
-
-          <div class="zone deduct">
-            <div class="row"><span>Cash Balance</span><b>-${money(d.prev_ca + d.partial_ca)}</b></div>
-            ${d.sss > 0 ? `<div class="row"><span>SSS</span><b>-${money(d.sss)}</b></div>` : ''}
-            ${d.pagibig > 0 ? `<div class="row"><span>Pag-Ibig</span><b>-${money(d.pagibig)}</b></div>` : ''}
-            ${d.philhealth > 0 ? `<div class="row"><span>Philhealth</span><b>-${money(d.philhealth)}</b></div>` : ''}
-            ${d.sss_loan > 0 ? `<div class="row"><span>SSS Loan</span><b>-${money(d.sss_loan)}</b></div>` : ''}
-            ${d.pagibig_loan > 0 ? `<div class="row"><span>Pag-Ibig Loan</span><b>-${money(d.pagibig_loan)}</b></div>` : ''}
-            ${d.coop_share > 0 ? `<div class="row"><span>Coop Share</span><b>-${money(d.coop_share)}</b></div>` : ''}
-            ${d.other_deductions > 0 ? `<div class="row"><span>Other Deductions</span><b>-${money(d.other_deductions)}</b></div>` : ''}
-            <div class="row total-ded"><span>Total Deductions</span><b>-${money(d.total_deductions)}</b></div>
-            <div class="row net"><span>NET PAY</span><b>${money(d.net_pay)}</b></div>
-          </div>
-        </div>
-      </section>`;
+      const dayRows = driverDayRows(d.sap_id);
+      return buildPayslipSectionHtml(d, dayRows, dateRangeString, periodStatus, escHtml, moneyFmt, shortDate);
     });
 
     // group into pages of SLIPS_PER_PAGE
@@ -1064,43 +1157,19 @@ export default function Dashboard({ session }) {
     }
 
     const win = window.open('', '_blank');
-    win.document.write(`<!DOCTYPE html><html><head><title>Payslips ${esc(dateRangeString)}</title>
-      <style>
-        * { box-sizing: border-box; }
-        @page { size: A4 portrait; margin: 6mm; }
-        body { font-family: Arial, sans-serif; margin: 0; color: #000; font-size: 7pt; }
-        .page { height: 280mm; page-break-after: always; }
-        .page:last-child { page-break-after: auto; }
-
-        .slip { height: 56mm; overflow: hidden; padding: 1.5mm 2mm; border-bottom: 1px dashed #888; page-break-inside: avoid; }
-        .slip:last-child { border-bottom: none; }
-
-        .slip-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #000; padding-bottom: 1mm; margin-bottom: 1.5mm; }
-        .slip-head .name { font-size: 10pt; text-transform: uppercase; margin-right: 6px; }
-        .slip-head span { font-size: 7pt; color: #333; }
-
-        .slip-body { display: flex; gap: 3mm; }
-        .zone.days { flex: 0 0 98mm; display: flex; gap: 2mm; }
-        .zone.days > * { flex: 1; }
-        .zone.summary { flex: 0 0 47mm; display: flex; flex-direction: column; }
-        .zone.deduct { flex: 1; display: flex; flex-direction: column; }
-
-        table { width: 100%; border-collapse: collapse; font-size: 6.3pt; }
-        th, td { border: 1px solid #ccc; padding: 0.3mm 1mm; line-height: 1.25; text-align: left; }
-        th { background: #f1f1f1; }
-        td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-
-        .row { display: flex; justify-content: space-between; padding: 0.4mm 0; font-size: 7pt; gap: 4px; }
-        .row.strong { border-top: 1px solid #000; font-weight: bold; margin-top: 0.5mm; }
-        .row.total-ded { border-top: 1px solid #000; font-weight: bold; margin-top: 1mm; }
-        .row.net { border-top: 2px solid #000; font-weight: bold; font-size: 9pt; margin-top: 0.5mm; }
-
-        .sig { margin-top: auto; font-size: 6.5pt; display: flex; flex-direction: column; gap: 2.5mm; padding-top: 3mm; }
-        .line { border-bottom: 1px solid #000; padding: 0 3px; font-weight: bold; display: inline-block; min-width: 24mm; }
-      </style></head><body>${pages.join('')}</body></html>`);
+    win.document.write(`<!DOCTYPE html><html><head><title>Payslips ${escHtml(dateRangeString)}</title>
+      <style>${PAYSLIP_PRINT_CSS}</style></head><body>${pages.join('')}</body></html>`);
     win.document.close();
     win.focus();
     setTimeout(() => { win.print(); }, 400);
+  };
+
+  // Print a single slip from the in-app payslip modal
+  const printFromModal = () => {
+    if (!payslipDriver) return;
+    // Reuse the already-built payroll row so deductions / net pay match the table exactly
+    const row = payrollData.find((p) => String(p.sap_id) === String(payslipDriver.sap_id)) || payslipDriver;
+    printPayslip(row);
   };
 
   const handleExportIncentives = () => {
@@ -1985,11 +2054,13 @@ export default function Dashboard({ session }) {
                                                       <td className="num">{Number(o.distance || 0).toFixed(1)}</td>
                                                       <td className="num">{peso(o.total_pay)}</td>
                                                     </tr>
-                                                    {openOrders.has(o.id) && (
-                                                      <tr className="rv-order-raw">
+                                                    {openOrders.has(o.id) && raw.length > 0 && (
+                                                      <tr>
                                                         <td colSpan="5">
                                                           <div className="rv-raw-grid">
-                                                            {raw.map(([k, v]) => <div key={k}><small>{k}</small><span>{String(v)}</span></div>)}
+                                                            {raw.map(([k, v]) => (
+                                                              <div key={k}><small>{k}</small><span>{String(v)}</span></div>
+                                                            ))}
                                                           </div>
                                                         </td>
                                                       </tr>
@@ -1997,17 +2068,9 @@ export default function Dashboard({ session }) {
                                                   </Fragment>
                                                 );
                                               })}
-                                              <tr className="rv-orders-total">
-                                                <td colSpan="3">{list.length} order{list.length === 1 ? '' : 's'} = day earnings</td>
-                                                <td className="num">{listKm.toFixed(1)}</td>
-                                                <td className="num">{peso(listPay)}</td>
-                                              </tr>
                                             </tbody>
                                           </table>
                                         )}
-                                      {!ordersLoading && !ordersError && list.length > 0 && list.length !== r.orders && (
-                                        <p className="rv-orders-empty">Only {list.length} of {r.orders} orders are stored for this day. Re-upload its CSV to refresh.</p>
-                                      )}
                                     </td>
                                   </tr>
                                 )}
@@ -2016,33 +2079,94 @@ export default function Dashboard({ session }) {
                           })}
                         </Fragment>
                       ))}
-                      <tr className="rv-week-row rv-total-row">
-                        <td>Period total</td>
-                        <td className="num">{breakdownData.totals.orders}</td>
-                        <td className="num">{breakdownData.totals.km.toFixed(1)}</td>
-                        <td className="num">{peso(breakdownData.totals.earnings)}</td>
-                        <td />
-                        <td className="num">{peso(breakdownData.totals.basic)}</td>
-                        <td className="num">{peso(breakdownData.totals.ca)}</td>
-                        <td className="num">{peso(breakdownData.totals.pay)}</td>
-                        <td className="num">{peso(breakdownData.totals.incentive)}</td>
-                        <td className="num">{peso(breakdownData.totals.combined)}</td>
-                        <td />
-                      </tr>
                     </tbody>
                   </table>
                 </div>
               )}
 
-              <p className="rv-note" style={{ marginTop: 14 }}>
-                Total pay <b>{peso(breakdownData.totals.pay)}</b> = Basic <b>{peso(breakdownData.totals.basic)}</b> (Allowable CA excluded), from <b>{breakdownData.totals.paidDays}</b> day(s) with a bracket. Days showing "—" have no bracket yet. Incentive is 10% of a day's earnings at ₱4,000 and above, 5% from ₱3,000 to ₱3,999.99. Total = Pay + Incentive (each part is shown under the total). The payslip does not include incentives yet.
-                {slipRow ? <> Net pay <b>{peso(slipRow.net_pay)}</b> = Total pay − Deductions <b>{peso(slipRow.total_deductions)}</b>, the same figures printed on the payslip.</> : null}
-              </p>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12 }}>
+                <button type="button" className="rv-pill-btn" onClick={() => { setBreakdownSap(null); }}>
+                  Close
+                </button>
+                <button type="button" className="rv-pill-btn primary" onClick={openPayslipFromBreakdown}>
+                  <Printer size={16} /> Open Payslip
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===================== PAYSLIP MODAL ===================== */}
+      {payslipDriver && (
+        <div className="rv-modal-overlay" onClick={() => setPayslipDriver(null)}>
+          <div className="rv-modal wide" onClick={(e) => e.stopPropagation()}>
+            <div className="rv-modal-head">
+              <h2>Payslip</h2>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" className="rv-pill-btn primary" onClick={printFromModal}>
+                  <Printer size={16} /> Print / Save PDF
+                </button>
+                <button onClick={() => setPayslipDriver(null)} className="rv-edit-btn"><X size={18} /></button>
+              </div>
             </div>
 
-            <div className="rv-modal-foot" style={{ gap: 10 }}>
-              <button onClick={openPayslipFromBreakdown} className="rv-pill-btn"><Wallet size={16} /> Open payslip</button>
-              <button onClick={() => window.print()} className="rv-pill-btn primary"><Printer size={16} /> Print</button>
+            <div className="rv-modal-body">
+              <div className="rv-payslip-header">
+                <h3>{payslipDriver.full_name}</h3>
+                <p>SAP ID: {payslipDriver.sap_id} · {payslipDriver.team} · Plate: {payslipDriver.plate_number}</p>
+                <p><strong>Period:</strong> {dateRangeString} · <strong>Status:</strong> {periodStatus}</p>
+              </div>
+
+              <div className="rv-bd-chips">
+                <div className="rv-bd-chip"><span>Days w/ pay</span><strong>{payslipDriver.days_worked}</strong></div>
+                <div className="rv-bd-chip"><span>Total earnings</span><strong>{peso(payslipDriver.total_earnings)}</strong></div>
+                <div className="rv-bd-chip"><span>Basic</span><strong>{peso(payslipDriver.basic)}</strong></div>
+                <div className="rv-bd-chip"><span>Allowable CA</span><strong>{peso(payslipDriver.basic_ca)}</strong></div>
+                <div className="rv-bd-chip hl"><span>Total Pay</span><strong>{peso(payslipDriver.total_basic)}</strong></div>
+                <div className="rv-bd-chip"><span>Deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(payslipDriver.total_deductions)}</strong></div>
+                <div className="rv-bd-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>NET PAY</span><strong>{peso(payslipDriver.net_pay)}</strong></div>
+              </div>
+
+              {payslipDriver.weeks && payslipDriver.weeks.length > 0 && (
+                <div className="rv-table-scroll" style={{ marginTop: 12 }}>
+                  <table className="rv-table" style={{ fontSize: '12px' }}>
+                    <thead>
+                      <tr>
+                        <th>Week</th><th>Date</th><th className="num">Orders</th><th className="num">Km</th>
+                        <th className="num">Earnings</th><th>Bracket</th>
+                        <th className="num">Basic</th><th className="num">Allowable CA</th><th className="num">Pay</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {payslipDriver.weeks.map((wk) => (
+                        <Fragment key={wk.start}>
+                          {wk.rows.map((r) => (
+                            <tr key={r.date}>
+                              <td>{formatDate(wk.start)}</td>
+                              <td>{weekdayShort(r.date)}, {formatDate(r.date)}</td>
+                              <td className="num">{r.orders}</td>
+                              <td className="num">{r.km.toFixed(1)}</td>
+                              <td className="num">{peso(r.earnings)}</td>
+                              <td>{bracketLabel(r.bracket)}</td>
+                              <td className="num">{r.pay ? peso(r.basic) : '-'}</td>
+                              <td className="num">{r.ca ? peso(r.ca) : '-'}</td>
+                              <td className="num"><strong>{r.pay ? peso(r.pay) : '-'}</strong></td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12 }}>
+                <button type="button" className="rv-pill-btn" onClick={() => setPayslipDriver(null)}>Close</button>
+                <button type="button" className="rv-pill-btn primary" onClick={printFromModal}>
+                  <Printer size={16} /> Print / Save PDF
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2051,57 +2175,28 @@ export default function Dashboard({ session }) {
       {/* ===================== INCENTIVE BREAKDOWN MODAL ===================== */}
       {incBreakdown && (
         <div className="rv-modal-overlay" onClick={() => setIncBreakdownSap(null)}>
-          <div className="rv-modal wide" onClick={(e) => e.stopPropagation()}>
+          <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
             <div className="rv-modal-head">
               <h2>Incentive Breakdown</h2>
               <button onClick={() => setIncBreakdownSap(null)} className="rv-edit-btn"><X size={18} /></button>
             </div>
-
             <div className="rv-modal-body">
               <div className="rv-payslip-header">
                 <h3>{incBreakdown.full_name}</h3>
-                <p>SAP ID: {incBreakdown.sap_id}{incBreakdown.group_name ? ` · ${incBreakdown.group_name}` : ''}{incBreakdown.role ? ` · ${incBreakdown.role}` : ''}</p>
-                <p><strong>Week:</strong> {incWeekRange} · Release: {incReleaseDate}</p>
+                <p>SAP ID: {incBreakdown.sap_id} · {incBreakdown.role || '—'} {incBreakdown.group_name ? `· ${incBreakdown.group_name}` : ''}</p>
+                <p><strong>Week:</strong> {incWeekRange}</p>
               </div>
 
               <div className="rv-bd-chips">
                 <div className="rv-bd-chip"><span>Week earnings</span><strong>{peso(incBreakdown.week_earnings)}</strong></div>
-                <div className="rv-bd-chip"><span>Individual ({incBreakdown.qualifiedDays} day{incBreakdown.qualifiedDays === 1 ? '' : 's'})</span><strong>{peso(incBreakdown.individual)}</strong></div>
+                <div className="rv-bd-chip"><span>Qualified days</span><strong>{incBreakdown.qualifiedDays}</strong></div>
+                <div className="rv-bd-chip hl"><span>Individual incentive</span><strong>{peso(incBreakdown.individual)}</strong></div>
                 <div className="rv-bd-chip"><span>Captain bonus</span><strong>{peso(incBreakdown.captain_bonus)}</strong></div>
-                <div className="rv-bd-chip hl"><span>Total cash incentive</span><strong>{peso(incBreakdown.total_cash)}</strong></div>
-                {incBreakdown.rice_kg > 0 && <div className="rv-bd-chip"><span>Rice</span><strong>{incBreakdown.rice_kg} kg</strong></div>}
+                <div className="rv-bd-chip"><span>Rice</span><strong>{incBreakdown.rice_kg} kg</strong></div>
+                <div className="rv-bd-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>Cash total</span><strong>{peso(incBreakdown.total_cash)}</strong></div>
               </div>
 
-              {/* Visual: each day's earnings against the 5% and 10% thresholds */}
-              <div style={{ margin: '18px 0 6px' }}>
-                <div style={{ display: 'flex', gap: 14, fontSize: 11, marginBottom: 8, flexWrap: 'wrap' }}>
-                  <span><i style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: '#16a34a', marginRight: 5 }} />10% ({peso(IND_TIERS[0].min, 0)} and above)</span>
-                  <span><i style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: '#eab308', marginRight: 5 }} />5% ({peso(IND_TIERS[1].min, 0)} to {peso(IND_TIERS[0].min - 0.01)})</span>
-                  <span><i style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 3, background: '#9ca3af', marginRight: 5 }} />No incentive</span>
-                </div>
-                {incBreakdown.days.map((d) => {
-                  const color = d.rate >= IND_TIERS[0].rate ? '#16a34a' : d.rate > 0 ? '#eab308' : '#9ca3af';
-                  const w = Math.min(100, (d.earnings / incBreakdown.barMax) * 100);
-                  const m1 = (IND_TIERS[1].min / incBreakdown.barMax) * 100;
-                  const m2 = (IND_TIERS[0].min / incBreakdown.barMax) * 100;
-                  return (
-                    <div key={d.date} style={{ display: 'grid', gridTemplateColumns: '88px 1fr 170px', gap: 10, alignItems: 'center', padding: '5px 0', fontSize: 12 }}>
-                      <span>{weekdayShort(d.date)}, {shortDate(d.date)}</span>
-                      <div style={{ position: 'relative', height: 16, borderRadius: 8, background: 'rgba(128,128,128,.18)', overflow: 'hidden' }}>
-                        <div style={{ width: `${w}%`, height: '100%', background: color, borderRadius: 8 }} />
-                        <i style={{ position: 'absolute', left: `${m1}%`, top: 0, bottom: 0, width: 1, background: 'rgba(128,128,128,.8)' }} />
-                        <i style={{ position: 'absolute', left: `${m2}%`, top: 0, bottom: 0, width: 1, background: 'rgba(128,128,128,.8)' }} />
-                      </div>
-                      <span style={{ textAlign: 'right' }}>
-                        {d.hasRecord ? peso(d.earnings) : 'No record'}
-                        {d.incentive > 0 && <strong style={{ color, marginLeft: 8 }}>+{peso(d.incentive)}</strong>}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="rv-table-scroll">
+              <div className="rv-table-scroll" style={{ marginTop: 12 }}>
                 <table className="rv-table" style={{ fontSize: '12px' }}>
                   <thead>
                     <tr><th>Date</th><th className="num">Orders</th><th className="num">Earnings</th><th className="num">Rate</th><th className="num">Incentive</th></tr>
@@ -2112,118 +2207,17 @@ export default function Dashboard({ session }) {
                         <td>{weekdayShort(d.date)}, {formatDate(d.date)}</td>
                         <td className="num">{d.hasRecord ? d.orders : '-'}</td>
                         <td className="num">{d.hasRecord ? peso(d.earnings) : '-'}</td>
-                        <td className="num">{d.rate > 0 ? `${Math.round(d.rate * 100)}%` : '-'}</td>
-                        <td className="num"><strong>{d.incentive > 0 ? peso(d.incentive) : '-'}</strong></td>
+                        <td className="num">{d.rate ? `${Math.round(d.rate * 100)}%` : '-'}</td>
+                        <td className="num">{d.incentive ? peso(d.incentive) : '-'}</td>
                       </tr>
                     ))}
-                    <tr className="rv-week-row rv-total-row">
-                      <td>Week total</td>
-                      <td className="num">{incBreakdown.days.reduce((s, d) => s + d.orders, 0)}</td>
-                      <td className="num">{peso(incBreakdown.week_earnings)}</td>
-                      <td />
-                      <td className="num">{peso(incBreakdown.individual)}</td>
-                    </tr>
                   </tbody>
                 </table>
               </div>
 
-              <p className="rv-note" style={{ marginTop: 14 }}>
-                Total cash incentive <b>{peso(incBreakdown.total_cash)}</b> = Individual <b>{peso(incBreakdown.individual)}</b> + Captain bonus <b>{peso(incBreakdown.captain_bonus)}</b>. Rice is given in kg and is not part of the cash total.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================== PAYSLIP MODAL ===================== */}
-      {payslipDriver && (
-        <div className="rv-modal-overlay" onClick={() => setPayslipDriver(null)}>
-          <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="rv-modal-head">
-              <h2>Driver Payslip</h2>
-              <button onClick={() => setPayslipDriver(null)} className="rv-edit-btn"><X size={18} /></button>
-            </div>
-
-            <div className="rv-modal-body" id="print-area">
-              <div className="rv-payslip-header">
-                <p><strong>NEMINTSCO - GSM</strong></p>
-                <h3>{payslipDriver.full_name}</h3>
-                <p>SAP ID: {payslipDriver.sap_id} · Plate: {payslipDriver.plate_number}</p>
-                <p><strong>Period:</strong> {dateRangeString}</p>
-                <p><strong>Status:</strong> {periodStatus}</p>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                <button type="button" className="rv-pill-btn" onClick={() => setIncBreakdownSap(null)}>Close</button>
               </div>
-
-              <div style={{ display: 'flex', gap: '20px', margin: '20px 0' }}>
-                <div style={{ flex: 1, background: '#f3f4f6', padding: '12px', borderRadius: '8px' }}>
-                  <small style={{ color: '#555' }}>Basic</small>
-                  <h3 style={{ margin: 0 }}>{peso(payslipDriver.basic)}</h3>
-                </div>
-                <div style={{ flex: 1, background: '#f3f4f6', padding: '12px', borderRadius: '8px' }}>
-                  <small style={{ color: '#555' }}>Allowable CA</small>
-                  <h3 style={{ margin: 0 }}>{peso(payslipDriver.basic_ca)}</h3>
-                </div>
-                <div style={{ flex: 1, background: '#f3f4f6', padding: '12px', borderRadius: '8px' }}>
-                  <small style={{ color: '#555' }}>Total Pay</small>
-                  <h3 style={{ margin: 0 }}>{peso(payslipDriver.total_basic)}</h3>
-                </div>
-              </div>
-              <p style={{ fontSize: '11px', color: '#666', marginTop: '-10px', marginBottom: '20px' }}>Note: Basic CA is not included in Net pay computations.</p>
-
-              <table className="rv-table" style={{ fontSize: '12px', marginTop: '20px' }}>
-                <thead>
-                  <tr>
-                    <th>Date</th><th className="num">Total Earnings</th><th>Bracket</th>
-                    <th className="num">Basic Rate</th><th className="num">Allowable CA</th><th className="num">Total Pay</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {payslipDriver.weeks.map((wk) => (
-                    <Fragment key={wk.start}>
-                      {wk.rows.map((r) => (
-                        <tr key={r.date}>
-                          <td>{formatDate(r.date)}</td>
-                          <td className="num">{peso(r.earnings)}</td>
-                          <td>{bracketLabel(r.bracket)}</td>
-                          <td className="num">{r.total ? peso(r.basic) : '-'}</td>
-                          <td className="num">{r.ca ? peso(r.ca) : '-'}</td>
-                          <td className="num">{r.total ? peso(r.total) : '-'}</td>
-                        </tr>
-                      ))}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-
-              <div className="rv-payslip-summary" style={{ marginTop: '30px' }}>
-                <h4 style={{ borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>Adjustments:</h4>
-                <p style={{ minHeight: '30px', color: '#888', fontStyle: 'italic', fontSize: '12px' }}>None</p>
-
-                <h4 style={{ borderBottom: '1px solid #ddd', paddingBottom: '5px', marginTop: '20px' }}>Deductions:</h4>
-                <div className="rv-payslip-row"><span>Cash Balance (Prev CA + Partial)</span><strong>-{peso(payslipDriver.prev_ca + payslipDriver.partial_ca)}</strong></div>
-                {payslipDriver.sss > 0 && <div className="rv-payslip-row"><span>SSS</span><strong>-{peso(payslipDriver.sss)}</strong></div>}
-                {payslipDriver.pagibig > 0 && <div className="rv-payslip-row"><span>Pag-Ibig</span><strong>-{peso(payslipDriver.pagibig)}</strong></div>}
-                {payslipDriver.philhealth > 0 && <div className="rv-payslip-row"><span>Philhealth</span><strong>-{peso(payslipDriver.philhealth)}</strong></div>}
-                {payslipDriver.sss_loan > 0 && <div className="rv-payslip-row"><span>SSS Loan</span><strong>-{peso(payslipDriver.sss_loan)}</strong></div>}
-                {payslipDriver.pagibig_loan > 0 && <div className="rv-payslip-row"><span>Pag-Ibig Loan</span><strong>-{peso(payslipDriver.pagibig_loan)}</strong></div>}
-                {payslipDriver.coop_share > 0 && <div className="rv-payslip-row"><span>Coop Share</span><strong>-{peso(payslipDriver.coop_share)}</strong></div>}
-                {payslipDriver.other_deductions > 0 && <div className="rv-payslip-row"><span>Other Deductions</span><strong>-{peso(payslipDriver.other_deductions)}</strong></div>}
-
-                <div className="rv-payslip-row" style={{ fontWeight: 'bold', marginTop: '10px', borderTop: '1px solid #ddd', paddingTop: '10px' }}>
-                  <span>Total Deductions</span>
-                  <strong style={{ color: 'var(--red)' }}>-{peso(payslipDriver.total_deductions)}</strong>
-                </div>
-
-                <div className="rv-payslip-row total" style={{ marginTop: '10px', background: '#e6f4ea', padding: '15px', borderRadius: '8px' }}>
-                  <span style={{ fontWeight: 'bold' }}>Net Pay</span>
-                  <strong className="text-green" style={{ fontSize: '18px' }}>{peso(payslipDriver.net_pay)}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div className="rv-modal-foot">
-              <button onClick={() => window.print()} className="rv-pill-btn primary">
-                <Printer size={16} /> Print / Save PDF
-              </button>
             </div>
           </div>
         </div>
