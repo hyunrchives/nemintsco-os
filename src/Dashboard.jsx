@@ -119,7 +119,6 @@ const buildPayslipSectionHtml = (driver, dayRows, dateRangeString, periodStatus,
         <div class="row"><span>Days w/ basic pay</span><b>${driver.days_worked}</b></div>
         <div class="row"><span>Total earnings</span><b>${money(driver.total_earnings)}</b></div>
         <div class="row"><span>Basic</span><b>${money(driver.basic)}</b></div>
-        <div class="row"><span>Allowable CA</span><b>${money(driver.basic_ca)}</b></div>
         <div class="row strong"><span>Total Pay</span><b>${money(driver.total_basic)}</b></div>
         <div class="sig">
           <div>Received: <span class="line">${esc(driver.full_name)}</span></div>
@@ -1199,7 +1198,7 @@ export default function Dashboard({ session }) {
     if (payrollData.length === 0) return alert('No data to export.');
 
     const rows = payrollData.map((d) => {
-      const { 'SAP ID': sapId, 'NAME': _name, ...rest } = buildPayrollExportRow(d);
+      const { 'SAP ID': sapId, 'NAME': _name, 'ALLOWABLE CA (not in Net Pay)': _ca, ...rest } = buildPayrollExportRow(d);
       return {
         'SAP ID': sapId,
         'Driver Name': d.full_name,
@@ -1527,11 +1526,6 @@ export default function Dashboard({ session }) {
             ? <input type="number" className="rv-mini-input" value={b?.basic_rate ?? 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'basic_rate', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
             : displayKey !== 'none' ? peso(visualBasic) : '-'}
         </td>
-        <td className="num" onClick={stop}>
-          {displayKey === 'custom'
-            ? <input type="number" className="rv-mini-input" value={b?.charge_ca ?? 0} onChange={(e) => setCustomLocal(d.sap_id, d.order_date, 'charge_ca', e.target.value)} onBlur={() => commitCustom(d.sap_id, d.order_date)} />
-            : displayKey !== 'none' ? peso(visualCA) : '-'}
-        </td>
         <td className="num"><strong>{displayKey !== 'none' ? peso(visualBasic) : '-'}</strong></td>
       </>
     );
@@ -1722,7 +1716,7 @@ export default function Dashboard({ session }) {
                       <thead>
                         <tr>
                           <th>Driver Name</th><th>SAP ID</th><th>Team</th><th>Phone</th><th className="num">Orders</th><th className="num">Total Pay</th><th className="num">Distance</th><th>Status</th>
-                          {isAdmin && <><th>Bracket</th><th className="num">Basic</th><th className="num">Allowable CA</th><th className="num">Pay</th></>}
+                          {isAdmin && <><th>Bracket</th><th className="num">Basic</th><th className="num">Pay</th></>}
                         </tr>
                       </thead>
                       <tbody>
@@ -1783,7 +1777,6 @@ export default function Dashboard({ session }) {
               <div className="rv-chips">
                 <div className="rv-chip"><span>Drivers</span><strong>{payrollTotals.drivers}</strong></div>
                 <div className="rv-chip"><span>Basic</span><strong>{peso(payrollTotals.basic)}</strong></div>
-                <div className="rv-chip"><span>Allowable CA</span><strong>{peso(payrollTotals.basicCa)}</strong></div>
                 <div className="rv-chip hl"><span>Total Pay</span><strong>{peso(payrollTotals.total)}</strong></div>
                 <div className="rv-chip"><span>Incentives</span><strong style={{ color: '#b45309' }}>{peso(payrollTotals.incentive)}</strong></div>
                 <div className="rv-chip hl"><span>Total + Incentives</span><strong>{peso(payrollTotals.totalPlus)}</strong></div>
@@ -1791,7 +1784,7 @@ export default function Dashboard({ session }) {
               </div>
 
               <p className="rv-note">
-                Totals add up the brackets you set in Daily Breakdown. <b>Allowable CA is excluded from Net Pay computations.</b> {unsetDays > 0 ? <b>{unsetDays} driver-days in this period have no bracket yet. </b> : null}
+                Totals add up the brackets you set in Daily Breakdown. {unsetDays > 0 ? <b>{unsetDays} driver-days in this period have no bracket yet. </b> : null}
                 Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + Coop + SSS + Pag-Ibig + Philhealth + Loans. Click a driver for the day-by-day breakdown. <b>Incentives are shown separately and are not on the payslip or in Net Pay yet.</b>
               </p>
 
@@ -1800,14 +1793,14 @@ export default function Dashboard({ session }) {
                   <thead>
                     <tr>
                       <th>SAP ID</th><th>Name</th><th className="num">#Days</th><th className="num">Earnings</th>
-                      <th className="num">Basic</th><th className="num">Allowable CA</th><th className="num">Total Pay</th>
+                      <th className="num">Basic</th><th className="num">Total Pay</th>
                       <th className="num">Incentive</th><th className="num">Total + Incentive</th>
                       <th className="num">Deductions</th><th className="num">Net Pay</th>
                       <th style={{ textAlign: 'center' }}>Slip</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {payrollLoading ? <tr><td colSpan="12" className="rv-empty">Calculating totals...</td></tr> : payrollView.length === 0 ? <tr><td colSpan="12" className="rv-empty">{payrollData.length === 0 ? 'No data for this date range.' : 'No drivers match your search.'}</td></tr> : (
+                    {payrollLoading ? <tr><td colSpan="11" className="rv-empty">Calculating totals...</td></tr> : payrollView.length === 0 ? <tr><td colSpan="11" className="rv-empty">{payrollData.length === 0 ? 'No data for this date range.' : 'No drivers match your search.'}</td></tr> : (
                       payrollView.map((d) => (
                         <tr key={d.sap_id} className="rv-click" onClick={() => setBreakdownSap(d.sap_id)}>
                           <td>{d.sap_id}</td>
@@ -1815,7 +1808,6 @@ export default function Dashboard({ session }) {
                           <td className="num"><strong>{d.days_worked}</strong></td>
                           <td className="num">{peso(d.total_earnings)}</td>
                           <td className="num">{peso(d.basic)}</td>
-                          <td className="num">{peso(d.basic_ca)}</td>
                           <td className="num"><strong>{peso(d.total_basic)}</strong></td>
                           <td className="num" style={{ color: '#b45309' }}>{d.incentive > 0 ? peso(d.incentive) : '-'}</td>
                           <td className="num"><strong>{peso(d.total_plus_incentive)}</strong>{d.incentive > 0 && <div style={{ fontSize: 10, opacity: 0.85 }}>{peso(d.total_basic)} + <span style={{ color: '#b45309' }}>{peso(d.incentive)}</span></div>}</td>
@@ -2161,7 +2153,7 @@ export default function Dashboard({ session }) {
                       <tr>
                         <th>Date</th><th className="num">Orders</th><th className="num">Km</th>
                         <th className="num">Earnings</th><th>Bracket</th>
-                        <th className="num">Basic</th><th className="num">Allowable CA</th>
+                        <th className="num">Basic</th>
                         <th className="num">Pay</th><th className="num">Incentive</th><th className="num">Total (Pay + Incentive)</th><th className="num">Running total</th>
                       </tr>
                     </thead>
@@ -2182,7 +2174,6 @@ export default function Dashboard({ session }) {
                                   <td className="num">{peso(r.earnings)}</td>
                                   <td>{bracketLabel(r.bracket)}</td>
                                   <td className="num">{r.pay ? peso(r.basic) : '-'}</td>
-                                  <td className="num">{r.ca ? peso(r.ca) : '-'}</td>
                                   <td className="num"><strong>{r.pay ? peso(r.pay) : '-'}</strong></td>
                                   <td className="num">{r.incentive > 0 ? <span style={{ color: r.rate >= IND_TIERS[0].rate ? '#16a34a' : '#b45309', fontWeight: 600 }}>{Math.round(r.rate * 100)}% · {peso(r.incentive)}</span> : '-'}</td>
                                   <td className="num">{r.combined ? <><strong>{peso(r.combined)}</strong>{r.incentive > 0 && <div style={{ fontSize: 10, opacity: 0.85 }}>{peso(r.pay)} + <span style={{ color: r.rate >= IND_TIERS[0].rate ? '#16a34a' : '#b45309' }}>{peso(r.incentive)}</span></div>}</> : '-'}</td>
@@ -2190,7 +2181,7 @@ export default function Dashboard({ session }) {
                                 </tr>
                                 {open && (
                                   <tr className="rv-orders-row">
-                                    <td colSpan="11">
+                                    <td colSpan="10">
                                       {ordersLoading ? <p className="rv-orders-empty">Loading orders…</p>
                                         : ordersError ? <p className="rv-orders-empty">Could not load orders: {ordersError}</p>
                                         : list.length === 0 ? <p className="rv-orders-empty">No order details stored for this day. Re-upload that day's CSV to see each order.</p>
@@ -2279,7 +2270,6 @@ export default function Dashboard({ session }) {
                 <div className="rv-bd-chip"><span>Days w/ pay</span><strong>{payslipDriver.days_worked}</strong></div>
                 <div className="rv-bd-chip"><span>Total earnings</span><strong>{peso(payslipDriver.total_earnings)}</strong></div>
                 <div className="rv-bd-chip"><span>Basic</span><strong>{peso(payslipDriver.basic)}</strong></div>
-                <div className="rv-bd-chip"><span>Allowable CA</span><strong>{peso(payslipDriver.basic_ca)}</strong></div>
                 <div className="rv-bd-chip hl"><span>Total Pay</span><strong>{peso(payslipDriver.total_basic)}</strong></div>
                 <div className="rv-bd-chip"><span>Deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(payslipDriver.total_deductions)}</strong></div>
                 <div className="rv-bd-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>NET PAY</span><strong>{peso(payslipDriver.net_pay)}</strong></div>
@@ -2292,7 +2282,7 @@ export default function Dashboard({ session }) {
                       <tr>
                         <th>Week</th><th>Date</th><th className="num">Orders</th><th className="num">Km</th>
                         <th className="num">Earnings</th><th>Bracket</th>
-                        <th className="num">Basic</th><th className="num">Allowable CA</th><th className="num">Pay</th>
+                        <th className="num">Basic</th><th className="num">Pay</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2307,7 +2297,6 @@ export default function Dashboard({ session }) {
                               <td className="num">{peso(r.earnings)}</td>
                               <td>{bracketLabel(r.bracket)}</td>
                               <td className="num">{r.pay ? peso(r.basic) : '-'}</td>
-                              <td className="num">{r.ca ? peso(r.ca) : '-'}</td>
                               <td className="num"><strong>{r.pay ? peso(r.pay) : '-'}</strong></td>
                             </tr>
                           ))}
