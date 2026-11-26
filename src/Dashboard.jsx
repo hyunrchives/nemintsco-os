@@ -256,6 +256,12 @@ export default function Dashboard({ session }) {
   const [confirmText, setConfirmText] = useState('');
   const CONFIRM_PHRASE = 'DELETE ALL';
 
+  // ---------- delete range ----------
+  const [showRangeDelete, setShowRangeDelete] = useState(false);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+  const [deletingRange, setDeletingRange] = useState(false);
+
   const [periodStatus, setPeriodStatus] = useState('Draft');
   const [payslipDriver, setPayslipDriver] = useState(null);
   const [incBreakdownSap, setIncBreakdownSap] = useState(null);
@@ -786,6 +792,93 @@ export default function Dashboard({ session }) {
     await supabase.from('driver_orders').delete().eq('order_date', selectedDate);
     await fetchAvailableDates();
     setDrivers([]);
+  };
+
+  // ============ DELETE RANGE ============
+  const openRangeDelete = () => {
+    if (!isAdmin) return;
+    const oldest = availableDates[availableDates.length - 1] || '';
+    setRangeFrom(selectedDate || oldest);
+    setRangeTo(selectedDate || availableDates[0] || '');
+    setShowRangeDelete(true);
+  };
+
+  const closeRangeDelete = () => { if (!deletingRange) setShowRangeDelete(false); };
+
+  // Days (that actually have uploaded data) inside the chosen range
+  const rangeDays = useMemo(() => {
+    if (!rangeFrom || !rangeTo || rangeFrom > rangeTo) return [];
+    return availableDates.filter((d) => d >= rangeFrom && d <= rangeTo);
+  }, [availableDates, rangeFrom, rangeTo]);
+
+  const rangeTouchesPaid =
+    periodStatus === 'Paid' && startDate && endDate && rangeFrom && rangeTo &&
+    rangeFrom <= endDate && rangeTo >= startDate;
+
+  const handleDeleteRange = async () => {
+    if (!isAdmin) return alert('Access Denied.');
+    if (!rangeFrom || !rangeTo) return alert('Pick both a start and an end date.');
+    if (rangeFrom > rangeTo) return alert('The start date must be on or before the end date.');
+    if (rangeDays.length === 0) return alert('There is no data inside that range.');
+    if (rangeTouchesPaid) return alert('🔒 This range overlaps a period marked as PAID. Unlock it in Payroll first.');
+    if (!window.confirm(
+      `⚠️ Permanently delete ALL records from ${formatDate(rangeFrom)} to ${formatDate(rangeTo)}?\n\n` +
+      `${rangeDays.length} day${rangeDays.length === 1 ? '' : 's'} of uploads, order details and brackets will be removed. This cannot be undone.`
+    )) return;
+
+    setDeletingRange(true);
+    try {
+      const tables = ['drivers', 'driver_orders', 'daily_brackets'];
+      for (const table of tables) {
+        const { error } = await supabase.from(table).delete().gte('order_date', rangeFrom).lte('order_date', rangeTo);
+        if (error) throw new Error(`${table}: ${error.message}`);
+      }
+
+      // clear any cached brackets that fell inside the range
+      setBrackets((prev) => {
+        const next = {};
+        Object.keys(prev).forEach((k) => {
+          const date = k.split('__')[1];
+          if (!(date >= rangeFrom && date <= rangeTo)) next[k] = prev[k];
+        });
+        return next;
+      });
+
+      // refresh the list of dates and move any selection that no longer exists
+      const { data, error } = await supabase.from('drivers').select('order_date');
+      if (error) throw new Error(error.message);
+      const remaining = [...new Set((data || []).map((r) => r.order_date))].sort().reverse();
+      setAvailableDates(remaining);
+
+      const inRange = (d) => d && d >= rangeFrom && d <= rangeTo;
+      if (inRange(selectedDate)) {
+        setSelectedDate(remaining[0] || '');
+        if (!remaining[0]) setDrivers([]);
+      }
+      if (inRange(startDate) || inRange(endDate)) {
+        setStartDate(remaining[remaining.length - 1] || '');
+        setEndDate(remaining[0] || '');
+        if (!remaining.length) setPayrollDrivers([]);
+      }
+      if (incWeek) {
+        const weekEnd = addDays(incWeek, 6);
+        const weekHasData = remaining.some((d) => d >= incWeek && d <= weekEnd);
+        if (!weekHasData) {
+          setIncWeek(remaining[0] ? mondayOf(remaining[0]) : '');
+          if (!remaining.length) setIncDrivers([]);
+        } else {
+          fetchIncDrivers(incWeek);
+        }
+      }
+      setBreakdownSap(null);
+
+      alert(`✅ Deleted ${rangeDays.length} day${rangeDays.length === 1 ? '' : 's'} of data (${formatDate(rangeFrom)} - ${formatDate(rangeTo)}).`);
+      setShowRangeDelete(false);
+    } catch (err) {
+      alert('Failed to delete range: ' + (err.message || err));
+    } finally {
+      setDeletingRange(false);
+    }
   };
 
   const handleLogout = () => supabase.auth.signOut();
@@ -1387,6 +1480,17 @@ export default function Dashboard({ session }) {
         {isAdmin && (
           <button onClick={clearCurrentDate} className="rv-icon-btn danger" title="Delete this day's records"><Trash2 size={17} /></button>
         )}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={openRangeDelete}
+            className="rv-pill-btn rv-danger-btn"
+            disabled={availableDates.length === 0}
+            title="Delete records for a range of dates"
+          >
+            <Trash2 size={16} /> Delete range
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1947,6 +2051,59 @@ export default function Dashboard({ session }) {
           )}
         </div>{/* /rv-main */}
       </div>{/* /rv-frame */}
+
+      {/* ===================== DELETE RANGE MODAL ===================== */}
+      {showRangeDelete && isAdmin && (
+        <div className="rv-modal-overlay" onClick={closeRangeDelete}>
+          <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rv-modal-head">
+              <h2>Delete date range</h2>
+              <button onClick={closeRangeDelete} className="rv-edit-btn" disabled={deletingRange}><X size={18} /></button>
+            </div>
+            <div className="rv-modal-body">
+              <p className="rv-sub" style={{ marginTop: 0 }}>
+                Removes uploaded records, order details and brackets for every day between the two dates (inclusive). The driver directory is not touched.
+              </p>
+
+              <div className="rv-payroll-controls">
+                <div className="rv-select">
+                  <span className="rv-sub" style={{ margin: 0 }}>From</span>
+                  <select value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} disabled={deletingRange}>
+                    {availableDates.slice().reverse().map((d) => <option key={`rf-${d}`} value={d}>{formatDate(d)}</option>)}
+                  </select>
+                </div>
+                <div className="rv-select">
+                  <span className="rv-sub" style={{ margin: 0 }}>To</span>
+                  <select value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} disabled={deletingRange}>
+                    {availableDates.map((d) => <option key={`rt-${d}`} value={d}>{formatDate(d)}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <p className="rv-note" style={{ marginTop: 12 }}>
+                {rangeFrom && rangeTo && rangeFrom > rangeTo
+                  ? <b>The start date must be on or before the end date.</b>
+                  : rangeDays.length === 0
+                    ? 'No data in this range.'
+                    : <><b>{rangeDays.length} day{rangeDays.length === 1 ? '' : 's'}</b> with data will be deleted: {formatDate(rangeDays[rangeDays.length - 1])}{rangeDays.length > 1 ? ` – ${formatDate(rangeDays[0])}` : ''}.</>}
+                {rangeTouchesPaid && <> <b>🔒 This overlaps a PAID period. Unlock it in Payroll first.</b></>}
+              </p>
+
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12 }}>
+                <button type="button" className="rv-pill-btn" onClick={closeRangeDelete} disabled={deletingRange}>Cancel</button>
+                <button
+                  type="button"
+                  className="rv-pill-btn rv-danger-btn"
+                  onClick={handleDeleteRange}
+                  disabled={deletingRange || rangeDays.length === 0 || rangeTouchesPaid}
+                >
+                  <Trash2 size={16} /> {deletingRange ? 'Deleting...' : `Delete ${rangeDays.length} day${rangeDays.length === 1 ? '' : 's'}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ===================== DRIVER BREAKDOWN MODAL ===================== */}
       {breakdownData && (
