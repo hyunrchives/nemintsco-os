@@ -933,6 +933,7 @@ export default function Dashboard({ session }) {
   };
 
   // ONE shared source of per-day rows: used by Print All Payslips, the payslip modal and the breakdown modal
+  // NOTE: incentives are tracked on their own and are NEVER added to basic pay.
   const driverDayRows = (sapId) =>
     payrollDrivers
       .filter((r) => String(r.sap_id) === String(sapId))
@@ -948,11 +949,10 @@ export default function Dashboard({ session }) {
           bracket: b?.bracket || 'none',
           basic,
           ca: Number(b?.charge_ca || 0),
-          pay: basic,   // Allowable CA excluded
+          pay: basic,   // Allowable CA excluded; incentive NOT included
           total: basic, // alias used by the payslip modal
           rate: individualRate(rec.total_pay),
-          incentive: round2(Number(rec.total_pay || 0) * individualRate(rec.total_pay)),
-          combined: round2(basic + round2(Number(rec.total_pay || 0) * individualRate(rec.total_pay))), // Pay + Incentive
+          incentive: round2(Number(rec.total_pay || 0) * individualRate(rec.total_pay)), // shown separately only
         };
       });
 
@@ -988,7 +988,7 @@ export default function Dashboard({ session }) {
       if (b) {
         r.basic += Number(b.basic_rate || 0);
         r.basic_ca += Number(b.charge_ca || 0);
-        r.total_basic += Number(b.basic_rate || 0); // EXCLUDED Allowable CA from final pay
+        r.total_basic += Number(b.basic_rate || 0); // EXCLUDED Allowable CA and incentives from final pay
         if (Number(b.basic_rate) > 0) r.days_worked += 1; // same rule as the breakdown ("days with pay")
       }
       if (d.vehicle_plate) r.plate_number = d.vehicle_plate;
@@ -1008,7 +1008,7 @@ export default function Dashboard({ session }) {
         ...r,
         total_earnings: round2(r.total_earnings), basic: round2(r.basic), basic_ca: round2(r.basic_ca),
         total_basic: round2(r.total_basic), prev_ca: round2(r.prev_ca),
-        incentive: round2(r.incentive), total_plus_incentive: round2(r.total_basic + r.incentive),
+        incentive: round2(r.incentive),
         total_deductions: round2(deductions), net_pay: round2(r.total_basic - deductions),
       };
     }).sort((a, b) => String(a.sap_id).localeCompare(String(b.sap_id), undefined, { numeric: true }));
@@ -1021,7 +1021,6 @@ export default function Dashboard({ session }) {
     total: payrollData.reduce((s, d) => s + d.total_basic, 0),
     net: payrollData.reduce((s, d) => s + d.net_pay, 0),
     incentive: payrollData.reduce((s, d) => s + d.incentive, 0),
-    totalPlus: payrollData.reduce((s, d) => s + d.total_plus_incentive, 0),
   }), [payrollData]);
 
   const unsetDays = useMemo(
@@ -1152,6 +1151,7 @@ export default function Dashboard({ session }) {
 
   // Earnings are positive, deductions are negative, Cash Advance and Coop Share each have their own column.
   // Values are real numbers (not strings) so Excel can sum them.
+  // Incentive (when requested) is its own separate column and is NOT part of TOTAL PAY or NET PAY.
   const buildPayrollExportRow = (d, withIncentive = false) => ({
     'SAP ID': d.sap_id,
     'NAME': d.full_name,
@@ -1162,10 +1162,6 @@ export default function Dashboard({ session }) {
     'BASIC': pos(d.basic),
     'ALLOWABLE CA (not in Net Pay)': pos(d.basic_ca),
     'TOTAL PAY (+)': pos(d.total_basic),
-    ...(withIncentive ? {
-      'INCENTIVE (+)': pos(d.incentive),
-      'TOTAL PAY + INCENTIVE (+)': pos(d.total_plus_incentive),
-    } : {}),
 
     // ---------- NEGATIVE (deductions) ----------
     'CA - Prev Period (-)': neg(d.prev_ca),
@@ -1182,6 +1178,9 @@ export default function Dashboard({ session }) {
 
     // ---------- RESULT ----------
     'NET PAY': pos(d.net_pay),
+
+    // ---------- SEPARATE (not part of pay) ----------
+    ...(withIncentive ? { 'INCENTIVE (separate, not in Net Pay)': pos(d.incentive) } : {}),
   });
 
   const handleExportCSV = () => {
@@ -1367,18 +1366,18 @@ export default function Dashboard({ session }) {
     const dayRows = driverDayRows(breakdownSap);
     const dir = dirMap.get(String(breakdownSap).trim()) || {};
     const first = payrollDrivers.find((d) => String(d.sap_id) === String(breakdownSap)) || {};
-    const totals = { earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0, incentive: 0, combined: 0, paidDays: 0, incDays: 0 };
+    const totals = { earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0, incentive: 0, paidDays: 0, incDays: 0 };
     const weeksMap = {};
     let running = 0;
     dayRows.forEach((src) => {
       const row = { ...src };
-      running += row.combined; // Pay + Incentive
+      running += row.pay; // basic pay only, incentives are NOT added
       row.running = running;
       const w = mondayOf(row.date);
-      if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0, incentive: 0, combined: 0 };
+      if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0, incentive: 0 };
       const wk = weeksMap[w];
       wk.rows.push(row);
-      ['earnings', 'orders', 'km', 'basic', 'ca', 'pay', 'incentive', 'combined'].forEach((f) => { wk[f] += row[f]; totals[f] += row[f]; });
+      ['earnings', 'orders', 'km', 'basic', 'ca', 'pay', 'incentive'].forEach((f) => { wk[f] += row[f]; totals[f] += row[f]; });
       if (row.pay > 0) totals.paidDays += 1;
       if (row.incentive > 0) totals.incDays += 1;
     });
@@ -1778,14 +1777,13 @@ export default function Dashboard({ session }) {
                 <div className="rv-chip"><span>Drivers</span><strong>{payrollTotals.drivers}</strong></div>
                 <div className="rv-chip"><span>Basic</span><strong>{peso(payrollTotals.basic)}</strong></div>
                 <div className="rv-chip hl"><span>Total Pay</span><strong>{peso(payrollTotals.total)}</strong></div>
-                <div className="rv-chip"><span>Incentives</span><strong style={{ color: '#b45309' }}>{peso(payrollTotals.incentive)}</strong></div>
-                <div className="rv-chip hl"><span>Total + Incentives</span><strong>{peso(payrollTotals.totalPlus)}</strong></div>
+                <div className="rv-chip"><span>Incentives (separate)</span><strong style={{ color: '#b45309' }}>{peso(payrollTotals.incentive)}</strong></div>
                 <div className="rv-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>Total Net Pay</span><strong>{peso(payrollTotals.net)}</strong></div>
               </div>
 
               <p className="rv-note">
                 Totals add up the brackets you set in Daily Breakdown. {unsetDays > 0 ? <b>{unsetDays} driver-days in this period have no bracket yet. </b> : null}
-                Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + Coop + SSS + Pag-Ibig + Philhealth + Loans. Click a driver for the day-by-day breakdown. <b>Incentives are shown separately and are not on the payslip or in Net Pay yet.</b>
+                Deductions = CA charged last period{prevRangeString ? ` (${prevRangeString})` : ''} in full + partial payment of older balance + Coop + SSS + Pag-Ibig + Philhealth + Loans. Click a driver for the day-by-day breakdown. <b>Incentives are shown separately for reference only. They are not added to basic pay, the payslip or Net Pay.</b>
               </p>
 
               <div className="rv-table-scroll">
@@ -1794,13 +1792,13 @@ export default function Dashboard({ session }) {
                     <tr>
                       <th>SAP ID</th><th>Name</th><th className="num">#Days</th><th className="num">Earnings</th>
                       <th className="num">Basic</th><th className="num">Total Pay</th>
-                      <th className="num">Incentive</th><th className="num">Total + Incentive</th>
+                      <th className="num">Incentive</th>
                       <th className="num">Deductions</th><th className="num">Net Pay</th>
                       <th style={{ textAlign: 'center' }}>Slip</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {payrollLoading ? <tr><td colSpan="11" className="rv-empty">Calculating totals...</td></tr> : payrollView.length === 0 ? <tr><td colSpan="11" className="rv-empty">{payrollData.length === 0 ? 'No data for this date range.' : 'No drivers match your search.'}</td></tr> : (
+                    {payrollLoading ? <tr><td colSpan="10" className="rv-empty">Calculating totals...</td></tr> : payrollView.length === 0 ? <tr><td colSpan="10" className="rv-empty">{payrollData.length === 0 ? 'No data for this date range.' : 'No drivers match your search.'}</td></tr> : (
                       payrollView.map((d) => (
                         <tr key={d.sap_id} className="rv-click" onClick={() => setBreakdownSap(d.sap_id)}>
                           <td>{d.sap_id}</td>
@@ -1810,7 +1808,6 @@ export default function Dashboard({ session }) {
                           <td className="num">{peso(d.basic)}</td>
                           <td className="num"><strong>{peso(d.total_basic)}</strong></td>
                           <td className="num" style={{ color: '#b45309' }}>{d.incentive > 0 ? peso(d.incentive) : '-'}</td>
-                          <td className="num"><strong>{peso(d.total_plus_incentive)}</strong>{d.incentive > 0 && <div style={{ fontSize: 10, opacity: 0.85 }}>{peso(d.total_basic)} + <span style={{ color: '#b45309' }}>{peso(d.incentive)}</span></div>}</td>
                           <td className="num" style={{ color: 'var(--red)' }}>-{peso(d.total_deductions)}</td>
                           <td className="num"><strong className="text-green">{peso(d.net_pay)}</strong></td>
                           <td style={{ textAlign: 'center' }}>
@@ -2118,8 +2115,7 @@ export default function Dashboard({ session }) {
                 <div className="rv-bd-chip"><span>Days with pay</span><strong>{breakdownData.totals.paidDays}</strong></div>
                 <div className="rv-bd-chip"><span>Total earnings</span><strong>{peso(breakdownData.totals.earnings)}</strong></div>
                 <div className="rv-bd-chip hl"><span>Total pay</span><strong>{peso(breakdownData.totals.pay)}</strong></div>
-                <div className="rv-bd-chip"><span>Incentives ({breakdownData.totals.incDays} day{breakdownData.totals.incDays === 1 ? '' : 's'})</span><strong className="text-green">{peso(breakdownData.totals.incentive)}</strong></div>
-                <div className="rv-bd-chip hl"><span>Total + incentives</span><strong>{peso(breakdownData.totals.combined)}</strong></div>
+                <div className="rv-bd-chip"><span>Incentives, separate ({breakdownData.totals.incDays} day{breakdownData.totals.incDays === 1 ? '' : 's'})</span><strong className="text-green">{peso(breakdownData.totals.incentive)}</strong></div>
                 {slipRow && (
                   <>
                     <div className="rv-bd-chip"><span>Deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.total_deductions)}</strong></div>
@@ -2154,7 +2150,7 @@ export default function Dashboard({ session }) {
                         <th>Date</th><th className="num">Orders</th><th className="num">Km</th>
                         <th className="num">Earnings</th><th>Bracket</th>
                         <th className="num">Basic</th>
-                        <th className="num">Pay</th><th className="num">Incentive</th><th className="num">Total (Pay + Incentive)</th><th className="num">Running total</th>
+                        <th className="num">Pay</th><th className="num">Incentive (separate)</th><th className="num">Running pay total</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2163,8 +2159,6 @@ export default function Dashboard({ session }) {
                           {wk.rows.map((r) => {
                             const list = breakdownOrders[r.date] || [];
                             const open = !collapsedDays.has(r.date);
-                            const listPay = list.reduce((sum, o) => sum + Number(o.total_pay || 0), 0);
-                            const listKm = list.reduce((sum, o) => sum + Number(o.distance || 0), 0);
                             return (
                               <Fragment key={r.date}>
                                 <tr className={`rv-click ${r.date === selectedDate ? 'sel' : ''}`} onClick={() => toggleDay(r.date)}>
@@ -2176,12 +2170,11 @@ export default function Dashboard({ session }) {
                                   <td className="num">{r.pay ? peso(r.basic) : '-'}</td>
                                   <td className="num"><strong>{r.pay ? peso(r.pay) : '-'}</strong></td>
                                   <td className="num">{r.incentive > 0 ? <span style={{ color: r.rate >= IND_TIERS[0].rate ? '#16a34a' : '#b45309', fontWeight: 600 }}>{Math.round(r.rate * 100)}% · {peso(r.incentive)}</span> : '-'}</td>
-                                  <td className="num">{r.combined ? <><strong>{peso(r.combined)}</strong>{r.incentive > 0 && <div style={{ fontSize: 10, opacity: 0.85 }}>{peso(r.pay)} + <span style={{ color: r.rate >= IND_TIERS[0].rate ? '#16a34a' : '#b45309' }}>{peso(r.incentive)}</span></div>}</> : '-'}</td>
                                   <td className="num">{peso(r.running)}</td>
                                 </tr>
                                 {open && (
                                   <tr className="rv-orders-row">
-                                    <td colSpan="10">
+                                    <td colSpan="9">
                                       {ordersLoading ? <p className="rv-orders-empty">Loading orders…</p>
                                         : ordersError ? <p className="rv-orders-empty">Could not load orders: {ordersError}</p>
                                         : list.length === 0 ? <p className="rv-orders-empty">No order details stored for this day. Re-upload that day's CSV to see each order.</p>
