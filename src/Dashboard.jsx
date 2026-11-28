@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
 import { supabase } from './supabaseClient';
 import Papa from 'papaparse';
-import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, Download, Wallet, UserPlus, Edit, Printer, CheckCircle, Lock, Unlock, X, Home, Users, Gift, Plus } from 'lucide-react';
+import { Upload, LogOut, Trash2, RefreshCw, Calendar, Trophy, TrendingDown, TrendingUp, Download, Wallet, UserPlus, Edit, Printer, CheckCircle, Lock, Unlock, X, Home, Users, Gift, Plus, Clock } from 'lucide-react';
 import './Dashboard.css';
 import './DashboardTabs.css';
 import './DashboardDark.css';
@@ -83,10 +83,6 @@ const EMPTY_DRIVER = { sap_id: '', full_name: '', phone: '', vehicle_plate: '', 
 const EMPTY_GROUP = { id: null, name: '', captain: '', members: [] };
 
 // ============ STANDALONE PAYSLIP HTML BUILDER ============
-// Produces a self-contained A4 document for one driver. Used by both the
-// single-slip printer and the "Print All Payslips" batch printer, and by the
-// in-app payslip modal's print button so "Save as PDF" always captures the
-// FULL payslip, not a screenshot of the dashboard.
 const buildPayslipSectionHtml = (driver, dayRows, dateRangeString, periodStatus, esc, money, shortDate) => {
   const rowHtml = (rec) => `<tr>
       <td>${esc(shortDate(rec.date))}</td>
@@ -175,7 +171,6 @@ const PAYSLIP_PRINT_CSS = `
   .line { border-bottom: 1px solid #000; padding: 0 3px; font-weight: bold; display: inline-block; min-width: 24mm; }
 `;
 
-// Single-slip A4 page (uses a larger, more readable layout than the batch 5-up)
 const PAYSLIP_SINGLE_CSS = `
   * { box-sizing: border-box; }
   @page { size: A4 portrait; margin: 10mm; }
@@ -255,6 +250,13 @@ export default function Dashboard({ session }) {
   const [confirmText, setConfirmText] = useState('');
   const CONFIRM_PHRASE = 'DELETE ALL';
 
+  // ---------- live clock (top bar pill) ----------
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
   // ---------- delete range ----------
   const [showRangeDelete, setShowRangeDelete] = useState(false);
   const [rangeFrom, setRangeFrom] = useState('');
@@ -266,15 +268,24 @@ export default function Dashboard({ session }) {
   const [incBreakdownSap, setIncBreakdownSap] = useState(null);
   const [payrollSearch, setPayrollSearch] = useState('');
 
+  // ===== KM RANGE REPORT =====
+  const [kmFrom, setKmFrom] = useState('');
+  const [kmTo, setKmTo] = useState('');
+  const [kmLoading, setKmLoading] = useState(false);
+  const [kmData, setKmData] = useState([]);
+  const [kmSearch, setKmSearch] = useState('');
+  const [kmOpenDriver, setKmOpenDriver] = useState(null);
+
   const isAdmin = session?.user?.email === 'elen@nemintsco.com';
 
   const TABS = [
-    { id: 'overview', label: 'Overview', icon: <Home size={22} /> },
-    { id: 'daily', label: 'Daily Breakdown', icon: <Calendar size={22} /> },
+    { id: 'overview', label: 'Overview', icon: <Home size={20} /> },
+    { id: 'daily', label: 'Daily', icon: <Calendar size={20} /> },
     ...(isAdmin ? [
-      { id: 'payroll', label: 'Payroll', icon: <Wallet size={22} /> },
-      { id: 'incentives', label: 'Incentives', icon: <Gift size={22} /> },
-      { id: 'drivers', label: 'Drivers', icon: <Users size={22} /> },
+      { id: 'payroll', label: 'Payroll', icon: <Wallet size={20} /> },
+      { id: 'incentives', label: 'Incentives', icon: <Gift size={20} /> },
+      { id: 'km', label: 'KM Report', icon: <TrendingUp size={20} /> },
+      { id: 'drivers', label: 'Drivers', icon: <Users size={20} /> },
     ] : []),
   ];
   const activeTab = TABS.some((t) => t.id === tab) ? tab : 'overview';
@@ -423,6 +434,66 @@ export default function Dashboard({ session }) {
     setIncLoading(false);
   };
 
+  // ===== KM RANGE REPORT: fetch + aggregate per driver =====
+  const fetchKmRange = async (from, to) => {
+    if (!from || !to) return;
+    if (from > to) return alert('The start date must be on or before the end date.');
+    setKmLoading(true);
+    try {
+      let all = [];
+      let offset = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('daily_driver_stats')
+          .select('sap_id, full_name, order_date, distance, total_pay, orders_count, vehicle_plate, team')
+          .gte('order_date', from)
+          .lte('order_date', to)
+          .order('order_date', { ascending: true })
+          .range(offset, offset + 999);
+        if (error) throw error;
+        all = all.concat(data || []);
+        if (!data || data.length < 1000) break;
+        offset += 1000;
+      }
+
+      const map = {};
+      all.forEach((r) => {
+        const id = String(r.sap_id).trim();
+        const dir = dirMap.get(id) || {};
+        if (!map[id]) {
+          map[id] = {
+            sap_id: r.sap_id,
+            full_name: dir.full_name || r.full_name || 'Unknown Driver',
+            vehicle_plate: dir.vehicle_plate || r.vehicle_plate || '-',
+            team: r.team || getTeam(r.sap_id),
+            total_km: 0,
+            total_orders: 0,
+            total_pay: 0,
+            days_active: 0,
+            daily: [],
+          };
+        }
+        const km = Number(r.distance || 0);
+        map[id].total_km += km;
+        map[id].total_orders += Number(r.orders_count || 0);
+        map[id].total_pay += Number(r.total_pay || 0);
+        map[id].days_active += 1;
+        map[id].daily.push({ date: r.order_date, km, orders: Number(r.orders_count || 0), pay: Number(r.total_pay || 0) });
+      });
+
+      Object.values(map).forEach((d) => {
+        d.daily.sort((a, b) => a.date.localeCompare(b.date));
+      });
+
+      setKmData(Object.values(map).sort((a, b) => b.total_km - a.total_km));
+    } catch (err) {
+      alert('Failed to load KM data: ' + (err.message || err));
+      setKmData([]);
+    } finally {
+      setKmLoading(false);
+    }
+  };
+
   useEffect(() => { fetchAvailableDates(); fetchDirectory(); }, []);
   useEffect(() => { if (isAdmin) fetchGroups(); }, [isAdmin]);
   useEffect(() => {
@@ -433,6 +504,13 @@ export default function Dashboard({ session }) {
   }, [selectedDate]);
   useEffect(() => { if (isAdmin && startDate && endDate) fetchPayrollDrivers(startDate, endDate); }, [startDate, endDate, isAdmin]);
   useEffect(() => { if (isAdmin && incWeek) fetchIncDrivers(incWeek); }, [incWeek, isAdmin]);
+
+  // ===== KM RANGE REPORT: seed the KM range from available dates =====
+  useEffect(() => {
+    if (!isAdmin || availableDates.length === 0 || kmFrom || kmTo) return;
+    setKmFrom(availableDates[availableDates.length - 1]);
+    setKmTo(availableDates[0]);
+  }, [isAdmin, availableDates]);
 
   useEffect(() => {
     setCollapsedDays(new Set());
@@ -638,6 +716,7 @@ export default function Dashboard({ session }) {
 
     setDrivers([]); setPayrollDrivers([]); setIncDrivers([]); setBrackets({}); setAvailableDates([]);
     setSelectedDate(''); setStartDate(''); setEndDate(''); setIncWeek('');
+    setKmData([]); setKmFrom(''); setKmTo('');
     handleCancelEdit();
     await fetchDirectory();
     setConfirmText(''); setWipeDirectory(false); setDeletingAll(false);
@@ -804,7 +883,6 @@ export default function Dashboard({ session }) {
 
   const closeRangeDelete = () => { if (!deletingRange) setShowRangeDelete(false); };
 
-  // Days (that actually have uploaded data) inside the chosen range
   const rangeDays = useMemo(() => {
     if (!rangeFrom || !rangeTo || rangeFrom > rangeTo) return [];
     return availableDates.filter((d) => d >= rangeFrom && d <= rangeTo);
@@ -833,7 +911,6 @@ export default function Dashboard({ session }) {
         if (error) throw new Error(`${table}: ${error.message}`);
       }
 
-      // clear any cached brackets that fell inside the range
       setBrackets((prev) => {
         const next = {};
         Object.keys(prev).forEach((k) => {
@@ -843,7 +920,6 @@ export default function Dashboard({ session }) {
         return next;
       });
 
-      // refresh the list of dates and move any selection that no longer exists
       const { data, error } = await supabase.from('drivers').select('order_date');
       if (error) throw new Error(error.message);
       const remaining = [...new Set((data || []).map((r) => r.order_date))].sort().reverse();
@@ -868,6 +944,11 @@ export default function Dashboard({ session }) {
         } else {
           fetchIncDrivers(incWeek);
         }
+      }
+      if (kmFrom || kmTo) {
+        const kmStillValid = remaining.some((d) => d >= kmFrom && d <= kmTo);
+        if (!kmStillValid) { setKmFrom(remaining[remaining.length - 1] || ''); setKmTo(remaining[0] || ''); setKmData([]); }
+        else fetchKmRange(kmFrom, kmTo);
       }
       setBreakdownSap(null);
 
@@ -932,8 +1013,6 @@ export default function Dashboard({ session }) {
     return { sap_id: sapId, order_date: date, bracket: key, basic_rate: p.basic, charge_ca: p.ca, total_pay: round2(p.basic + p.ca) };
   };
 
-  // ONE shared source of per-day rows: used by Print All Payslips, the payslip modal and the breakdown modal
-  // NOTE: incentives are tracked on their own and are NEVER added to basic pay.
   const driverDayRows = (sapId) =>
     payrollDrivers
       .filter((r) => String(r.sap_id) === String(sapId))
@@ -949,10 +1028,10 @@ export default function Dashboard({ session }) {
           bracket: b?.bracket || 'none',
           basic,
           ca: Number(b?.charge_ca || 0),
-          pay: basic,   // Allowable CA excluded; incentive NOT included
-          total: basic, // alias used by the payslip modal
+          pay: basic,
+          total: basic,
           rate: individualRate(rec.total_pay),
-          incentive: round2(Number(rec.total_pay || 0) * individualRate(rec.total_pay)), // shown separately only
+          incentive: round2(Number(rec.total_pay || 0) * individualRate(rec.total_pay)),
         };
       });
 
@@ -988,8 +1067,8 @@ export default function Dashboard({ session }) {
       if (b) {
         r.basic += Number(b.basic_rate || 0);
         r.basic_ca += Number(b.charge_ca || 0);
-        r.total_basic += Number(b.basic_rate || 0); // EXCLUDED Allowable CA and incentives from final pay
-        if (Number(b.basic_rate) > 0) r.days_worked += 1; // same rule as the breakdown ("days with pay")
+        r.total_basic += Number(b.basic_rate || 0);
+        if (Number(b.basic_rate) > 0) r.days_worked += 1;
       }
       if (d.vehicle_plate) r.plate_number = d.vehicle_plate;
     });
@@ -1115,7 +1194,6 @@ export default function Dashboard({ session }) {
   const incWeekRange = incWeek ? `${formatDate(incWeek)} - ${formatDate(addDays(incWeek, 6))}` : 'Select week';
   const incReleaseDate = incWeek ? formatDate(addDays(incWeek, 8)) : '';
 
-  // Day-by-day incentive breakdown for one driver (selected week)
   const incBreakdown = useMemo(() => {
     if (!incBreakdownSap) return null;
     const id = String(incBreakdownSap).trim();
@@ -1137,6 +1215,31 @@ export default function Dashboard({ session }) {
     };
   }, [incBreakdownSap, incentiveRows, incDrivers, weekDays]);
 
+  // ===== KM RANGE REPORT: totals + filtered view =====
+  const kmTotals = useMemo(() => {
+    const totalKm = kmData.reduce((s, d) => s + d.total_km, 0);
+    const totalOrders = kmData.reduce((s, d) => s + d.total_orders, 0);
+    const totalPay = kmData.reduce((s, d) => s + d.total_pay, 0);
+    return {
+      drivers: kmData.length,
+      totalKm,
+      totalOrders,
+      totalPay,
+      avgKmPerDriver: kmData.length ? totalKm / kmData.length : 0,
+      avgKmPerOrder: totalOrders ? totalKm / totalOrders : 0,
+    };
+  }, [kmData]);
+
+  const kmFiltered = useMemo(() => {
+    const q = kmSearch.trim().toLowerCase();
+    if (!q) return kmData;
+    return kmData.filter((d) =>
+      String(d.full_name || '').toLowerCase().includes(q) ||
+      String(d.sap_id || '').toLowerCase().includes(q) ||
+      String(d.vehicle_plate || '').toLowerCase().includes(q)
+    );
+  }, [kmData, kmSearch]);
+
   // ============ EXPORT ============
   const downloadCSV = (rows, filename) => {
     const blob = new Blob([Papa.unparse(rows)], { type: 'text/csv;charset=utf-8;' });
@@ -1149,21 +1252,16 @@ export default function Dashboard({ session }) {
     document.body.removeChild(link);
   };
 
-  // Earnings are positive, deductions are negative, Cash Advance and Coop Share each have their own column.
-  // Values are real numbers (not strings) so Excel can sum them.
-  // Incentive (when requested) is its own separate column and is NOT part of TOTAL PAY or NET PAY.
   const buildPayrollExportRow = (d, withIncentive = false) => ({
     'SAP ID': d.sap_id,
     'NAME': d.full_name,
     '#DAYS': d.days_worked,
 
-    // ---------- POSITIVE (earnings) ----------
     'Total Earnings': pos(d.total_earnings),
     'BASIC': pos(d.basic),
     'ALLOWABLE CA (not in Net Pay)': pos(d.basic_ca),
     'TOTAL PAY (+)': pos(d.total_basic),
 
-    // ---------- NEGATIVE (deductions) ----------
     'CA - Prev Period (-)': neg(d.prev_ca),
     'CA - Partial Payment (-)': neg(d.partial_ca),
     'CASH ADVANCE TOTAL (-)': neg(d.prev_ca + d.partial_ca),
@@ -1176,10 +1274,8 @@ export default function Dashboard({ session }) {
     'Other Deductions (-)': neg(d.other_deductions),
     'TOTAL DEDUCTIONS (-)': neg(d.total_deductions),
 
-    // ---------- RESULT ----------
     'NET PAY': pos(d.net_pay),
 
-    // ---------- SEPARATE (not part of pay) ----------
     ...(withIncentive ? { 'INCENTIVE (separate, not in Net Pay)': pos(d.incentive) } : {}),
   });
 
@@ -1211,10 +1307,41 @@ export default function Dashboard({ session }) {
     downloadCSV(rows, `Payslips_${periodStatus}_${startDate}_to_${endDate}.csv`);
   };
 
+  // ===== KM RANGE REPORT: export =====
+  const handleExportKm = () => {
+    if (kmData.length === 0) return alert('No KM data to export.');
+    const rows = kmData.map((d) => ({
+      'SAP ID': d.sap_id,
+      'Name': d.full_name,
+      'Plate': d.vehicle_plate,
+      'Team': d.team,
+      'Days Active': d.days_active,
+      'Total Orders': d.total_orders,
+      'Total KM': d.total_km.toFixed(2),
+      'Avg KM/Day': (d.total_km / (d.days_active || 1)).toFixed(2),
+      'Avg KM/Order': (d.total_km / (d.total_orders || 1)).toFixed(2),
+      'Total Earnings': d.total_pay.toFixed(2),
+      'Period From': kmFrom,
+      'Period To': kmTo,
+    }));
+    rows.push({
+      'SAP ID': 'TOTAL',
+      'Name': `${kmData.length} drivers`,
+      'Plate': '',
+      'Team': '',
+      'Days Active': '',
+      'Total Orders': kmTotals.totalOrders,
+      'Total KM': kmTotals.totalKm.toFixed(2),
+      'Avg KM/Day': '',
+      'Avg KM/Order': kmTotals.avgKmPerOrder.toFixed(2),
+      'Total Earnings': kmTotals.totalPay.toFixed(2),
+      'Period From': kmFrom,
+      'Period To': kmTo,
+    });
+    downloadCSV(rows, `KM_Report_${kmFrom}_to_${kmTo}.csv`);
+  };
+
   // ============ PRINT PAYSLIPS ============
-  // Renders a COMPLETE standalone A4 document in a new window, then prints it.
-  // "Save as PDF" in the print dialog therefore captures the full payslip(s),
-  // not a screenshot of the dashboard page.
   const escHtml = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const moneyFmt = (n) => `₱${Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -1241,7 +1368,6 @@ export default function Dashboard({ session }) {
       return buildPayslipSectionHtml(d, dayRows, dateRangeString, periodStatus, escHtml, moneyFmt, shortDate);
     });
 
-    // group into pages of SLIPS_PER_PAGE
     const pages = [];
     for (let i = 0; i < slips.length; i += SLIPS_PER_PAGE) {
       pages.push(`<div class="page">${slips.slice(i, i + SLIPS_PER_PAGE).join('')}</div>`);
@@ -1255,10 +1381,8 @@ export default function Dashboard({ session }) {
     setTimeout(() => { win.print(); }, 400);
   };
 
-  // Print a single slip from the in-app payslip modal
   const printFromModal = () => {
     if (!payslipDriver) return;
-    // Reuse the already-built payroll row so deductions / net pay match the table exactly
     const row = payrollData.find((p) => String(p.sap_id) === String(payslipDriver.sap_id)) || payslipDriver;
     printPayslip(row);
   };
@@ -1371,7 +1495,7 @@ export default function Dashboard({ session }) {
     let running = 0;
     dayRows.forEach((src) => {
       const row = { ...src };
-      running += row.pay; // basic pay only, incentives are NOT added
+      running += row.pay;
       row.running = running;
       const w = mondayOf(row.date);
       if (!weeksMap[w]) weeksMap[w] = { start: w, rows: [], earnings: 0, orders: 0, km: 0, basic: 0, ca: 0, pay: 0, incentive: 0 };
@@ -1391,7 +1515,6 @@ export default function Dashboard({ session }) {
     };
   }, [breakdownSap, payrollDrivers, brackets, dirMap]);
 
-  // The same payroll row the slip uses, so Deductions and Net Pay match exactly
   const slipRow = breakdownSap ? payrollData.find((p) => String(p.sap_id) === String(breakdownSap)) : null;
 
   const toggleDay = (date) => setCollapsedDays((prev) => { const n = new Set(prev); n.has(date) ? n.delete(date) : n.add(date); return n; });
@@ -1441,6 +1564,8 @@ export default function Dashboard({ session }) {
   // ---------- view helpers ----------
   const rawName = (session?.user?.email || 'there').split('@')[0];
   const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+  const hour = now.getHours();
+  const greeting = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening';
   const pct = (n) => (stats?.totalDrivers ? Math.round((n / stats.totalDrivers) * 100) : 0);
 
   const RING_R = 62, RING_C = 2 * Math.PI * RING_R;
@@ -1535,6 +1660,7 @@ export default function Dashboard({ session }) {
       <div className="rv-frame">
         {/* ===================== SIDEBAR ===================== */}
         <aside className="rv-side">
+          <div className="rv-side-brand">N</div>
           <nav role="tablist">
             {TABS.map((t) => (
               <button
@@ -1546,16 +1672,31 @@ export default function Dashboard({ session }) {
                 onClick={() => setTab(t.id)}
               >
                 {t.icon}
+                <span className="rv-side-label">{t.label}</span>
               </button>
             ))}
           </nav>
-          <button onClick={handleLogout} className="rv-side-btn" title="Logout" aria-label="Logout"><LogOut size={20} /></button>
+
+          <div className="rv-side-user">
+            <span className="rv-side-avatar">{displayName.charAt(0)}</span>
+            <strong>{displayName}</strong>
+            <small>{isAdmin ? 'Administrator' : 'Staff'}</small>
+          </div>
+
+          <button onClick={handleLogout} className="rv-side-btn logout" title="Logout" aria-label="Logout">
+            <LogOut size={20} />
+            <span className="rv-side-label">Logout</span>
+          </button>
         </aside>
 
         <div className="rv-main">
           <header className="rv-top">
-            <div className="rv-logo">Nemintsco Depot</div>
+            <div className="rv-logo"><span className="rv-logo-mark">N</span>Nemintsco Depot</div>
             <div className="rv-top-right">
+              <span className="rv-clock">
+                <Clock size={15} />
+                {now.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' })}
+              </span>
               <span className="rv-user" title={session.user.email}>
                 <span className="rv-user-dot">{displayName.charAt(0)}</span>
                 <span className="rv-user-email">{session.user.email}</span>
@@ -1569,7 +1710,7 @@ export default function Dashboard({ session }) {
             <>
               <section className="rv-welcome">
                 <div className="rv-welcome-left">
-                  <h1>Welcome in, {displayName}</h1>
+                  <h1>Good {greeting}, <b>{displayName.toUpperCase()}</b></h1>
                   {stats && (
                     <div className="rv-pills">
                       {[
@@ -1972,6 +2113,149 @@ export default function Dashboard({ session }) {
             </>
           )}
 
+          {/* ===================== KM REPORT (admin) ===== */}
+          {activeTab === 'km' && isAdmin && (
+            <>
+              <section className="rv-card">
+                <div className="rv-panel-head">
+                  <div>
+                    <h3><TrendingUp size={18} /> Kilometer Report</h3>
+                    <p className="rv-sub">
+                      {kmFrom && kmTo ? `${formatDate(kmFrom)} - ${formatDate(kmTo)}` : 'Select a date range'} · {kmFiltered.length} of {kmData.length} drivers
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      onClick={() => fetchKmRange(kmFrom, kmTo)}
+                      className="rv-pill-btn"
+                      disabled={!kmFrom || !kmTo || kmLoading}
+                    >
+                      <RefreshCw size={16} /> {kmLoading ? 'Loading...' : 'Refresh'}
+                    </button>
+                    <button onClick={handleExportKm} className="rv-pill-btn primary" disabled={kmData.length === 0}>
+                      <Download size={16} /> Export KM
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rv-payroll-controls">
+                  <div className="rv-select">
+                    <span className="rv-sub" style={{ margin: 0 }}>From</span>
+                    <select value={kmFrom} onChange={(e) => setKmFrom(e.target.value)}>
+                      <option value="">Select start date</option>
+                      {availableDates.slice().reverse().map((d) => (
+                        <option key={`km-from-${d}`} value={d}>{formatDate(d)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="rv-select">
+                    <span className="rv-sub" style={{ margin: 0 }}>To</span>
+                    <select value={kmTo} onChange={(e) => setKmTo(e.target.value)}>
+                      <option value="">Select end date</option>
+                      {availableDates.map((d) => (
+                        <option key={`km-to-${d}`} value={d}>{formatDate(d)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <input
+                    type="search"
+                    className="rv-search"
+                    placeholder="Search name, SAP ID or plate…"
+                    value={kmSearch}
+                    onChange={(e) => setKmSearch(e.target.value)}
+                  />
+                  <button
+                    onClick={() => fetchKmRange(kmFrom, kmTo)}
+                    className="rv-pill-btn primary"
+                    disabled={!kmFrom || !kmTo || kmLoading || kmFrom > kmTo}
+                  >
+                    Compute
+                  </button>
+                </div>
+
+                <div className="rv-chips">
+                  <div className="rv-chip"><span>Drivers</span><strong>{kmTotals.drivers}</strong></div>
+                  <div className="rv-chip hl"><span>Total Kilometers</span><strong>{kmTotals.totalKm.toLocaleString('en-PH', { maximumFractionDigits: 2 })} km</strong></div>
+                  <div className="rv-chip"><span>Total Orders</span><strong>{kmTotals.totalOrders.toLocaleString()}</strong></div>
+                  <div className="rv-chip"><span>Avg KM / Driver</span><strong>{kmTotals.avgKmPerDriver.toFixed(2)} km</strong></div>
+                  <div className="rv-chip"><span>Avg KM / Order</span><strong>{kmTotals.avgKmPerOrder.toFixed(2)} km</strong></div>
+                </div>
+
+                <p className="rv-note">
+                  Kilometers are summed from each driver's daily <b>distance</b> records between the selected dates.
+                  Click a driver row to open the day-by-day breakdown (uses the KM range for the period).
+                </p>
+              </section>
+
+              <section className="rv-card rv-table-card">
+                <div className="rv-table-scroll">
+                  <table className="rv-table">
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>SAP ID</th>
+                        <th>Name</th>
+                        <th>Team</th>
+                        <th>Plate</th>
+                        <th className="num">Days Active</th>
+                        <th className="num">Orders</th>
+                        <th className="num">Total KM</th>
+                        <th className="num">Avg KM/Day</th>
+                        <th className="num">Avg KM/Order</th>
+                        <th className="num">Earnings</th>
+                        <th style={{ textAlign: 'center' }}>Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {kmLoading ? (
+                        <tr><td colSpan="12" className="rv-empty">Computing kilometers...</td></tr>
+                      ) : kmFiltered.length === 0 ? (
+                        <tr><td colSpan="12" className="rv-empty">{kmData.length === 0 ? 'Pick a date range and click Compute to load KM data.' : 'No drivers match your search.'}</td></tr>
+                      ) : (
+                        kmFiltered.map((d, i) => (
+                          <tr
+                            key={d.sap_id}
+                            className="rv-click"
+                            onClick={() => {
+                              if (kmFrom && kmTo) { setStartDate(kmFrom); setEndDate(kmTo); }
+                              setBreakdownSap(d.sap_id);
+                            }}
+                          >
+                            <td><span className={`rv-km-rank ${i === 0 ? 'top1' : i === 1 ? 'top2' : i === 2 ? 'top3' : ''}`}>{i + 1}</span></td>
+                            <td>{d.sap_id}</td>
+                            <td><div className="rv-driver-cell"><strong>{d.full_name}</strong></div></td>
+                            <td>{d.team}</td>
+                            <td>{d.vehicle_plate}</td>
+                            <td className="num">{d.days_active}</td>
+                            <td className="num">{d.total_orders}</td>
+                            <td className="num"><strong>{d.total_km.toLocaleString('en-PH', { maximumFractionDigits: 2 })} km</strong></td>
+                            <td className="num">{(d.total_km / (d.days_active || 1)).toFixed(2)} km</td>
+                            <td className="num">{(d.total_km / (d.total_orders || 1)).toFixed(2)} km</td>
+                            <td className="num">{peso(d.total_pay)}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (kmFrom && kmTo) { setStartDate(kmFrom); setEndDate(kmTo); }
+                                  setBreakdownSap(d.sap_id);
+                                }}
+                                className="rv-edit-btn"
+                                style={{ display: 'inline-grid' }}
+                                title="View daily breakdown"
+                              >
+                                <Calendar size={14} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </>
+          )}
+
           {/* ===================== DRIVERS (admin) ===================== */}
           {activeTab === 'drivers' && isAdmin && (
             <>
@@ -2038,329 +2322,169 @@ export default function Dashboard({ session }) {
               </section>
             </>
           )}
-        </div>{/* /rv-main */}
-      </div>{/* /rv-frame */}
 
-      {/* ===================== DELETE RANGE MODAL ===================== */}
-      {showRangeDelete && isAdmin && (
-        <div className="rv-modal-overlay" onClick={closeRangeDelete}>
-          <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="rv-modal-head">
-              <h2>Delete date range</h2>
-              <button onClick={closeRangeDelete} className="rv-edit-btn" disabled={deletingRange}><X size={18} /></button>
-            </div>
-            <div className="rv-modal-body">
-              <p className="rv-sub" style={{ marginTop: 0 }}>
-                Removes uploaded records, order details and brackets for every day between the two dates (inclusive). The driver directory is not touched.
-              </p>
-
-              <div className="rv-payroll-controls">
-                <div className="rv-select">
-                  <span className="rv-sub" style={{ margin: 0 }}>From</span>
-                  <select value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} disabled={deletingRange}>
-                    {availableDates.slice().reverse().map((d) => <option key={`rf-${d}`} value={d}>{formatDate(d)}</option>)}
-                  </select>
-                </div>
-                <div className="rv-select">
-                  <span className="rv-sub" style={{ margin: 0 }}>To</span>
-                  <select value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} disabled={deletingRange}>
-                    {availableDates.map((d) => <option key={`rt-${d}`} value={d}>{formatDate(d)}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <p className="rv-note" style={{ marginTop: 12 }}>
-                {rangeFrom && rangeTo && rangeFrom > rangeTo
-                  ? <b>The start date must be on or before the end date.</b>
-                  : rangeDays.length === 0
-                    ? 'No data in this range.'
-                    : <><b>{rangeDays.length} day{rangeDays.length === 1 ? '' : 's'}</b> with data will be deleted: {formatDate(rangeDays[rangeDays.length - 1])}{rangeDays.length > 1 ? ` – ${formatDate(rangeDays[0])}` : ''}.</>}
-                {rangeTouchesPaid && <> <b>🔒 This overlaps a PAID period. Unlock it in Payroll first.</b></>}
-              </p>
-
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12 }}>
-                <button type="button" className="rv-pill-btn" onClick={closeRangeDelete} disabled={deletingRange}>Cancel</button>
-                <button
-                  type="button"
-                  className="rv-pill-btn rv-danger-btn"
-                  onClick={handleDeleteRange}
-                  disabled={deletingRange || rangeDays.length === 0 || rangeTouchesPaid}
-                >
-                  <Trash2 size={16} /> {deletingRange ? 'Deleting...' : `Delete ${rangeDays.length} day${rangeDays.length === 1 ? '' : 's'}`}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===================== DRIVER BREAKDOWN MODAL ===================== */}
-      {breakdownData && (
-        <div className="rv-modal-overlay" onClick={() => setBreakdownSap(null)}>
-          <div className="rv-modal wide" onClick={(e) => e.stopPropagation()}>
-            <div className="rv-modal-head">
-              <h2>Driver Breakdown</h2>
-              <button onClick={() => setBreakdownSap(null)} className="rv-edit-btn"><X size={18} /></button>
-            </div>
-
-            <div className="rv-modal-body">
-              <div className="rv-payslip-header">
-                <h3>{breakdownData.full_name}</h3>
-                <p>SAP ID: {breakdownData.sap_id} · {breakdownData.team} · Plate: {breakdownData.plate}</p>
-                <p><strong>Period:</strong> {dateRangeString}</p>
-              </div>
-
-              <div className="rv-bd-chips">
-                <div className="rv-bd-chip"><span>Days with records</span><strong>{breakdownData.days}</strong></div>
-                <div className="rv-bd-chip"><span>Days with pay</span><strong>{breakdownData.totals.paidDays}</strong></div>
-                <div className="rv-bd-chip"><span>Total earnings</span><strong>{peso(breakdownData.totals.earnings)}</strong></div>
-                <div className="rv-bd-chip hl"><span>Total pay</span><strong>{peso(breakdownData.totals.pay)}</strong></div>
-                <div className="rv-bd-chip"><span>Incentives, separate ({breakdownData.totals.incDays} day{breakdownData.totals.incDays === 1 ? '' : 's'})</span><strong className="text-green">{peso(breakdownData.totals.incentive)}</strong></div>
-                {slipRow && (
-                  <>
-                    <div className="rv-bd-chip"><span>Deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.total_deductions)}</strong></div>
-                    <div className="rv-bd-chip hl"><span>Net pay</span><strong>{peso(slipRow.net_pay)}</strong></div>
-                  </>
-                )}
-              </div>
-
-              {slipRow && (
-                <div className="rv-bd-chips" style={{ marginTop: 8 }}>
-                  <div className="rv-bd-chip"><span>Cash advance</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.prev_ca + slipRow.partial_ca)}</strong></div>
-                  <div className="rv-bd-chip"><span>Coop share</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.coop_share)}</strong></div>
-                  <div className="rv-bd-chip"><span>Other deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(slipRow.sss + slipRow.pagibig + slipRow.philhealth + slipRow.sss_loan + slipRow.pagibig_loan + slipRow.other_deductions)}</strong></div>
-                </div>
-              )}
-
-              {breakdownData.weeks.length > 0 && (
-                <div className="rv-bd-toolbar">
-                  <span>Click a day to show or hide its orders</span>
-                  <div>
-                    <button type="button" className="rv-bd-link" onClick={() => setCollapsedDays(new Set())}>Expand all</button>
-                    <button type="button" className="rv-bd-link" onClick={() => setCollapsedDays(new Set(breakdownData.weeks.flatMap((w) => w.rows.map((r) => r.date))))}>Collapse all</button>
+          {/* ===================== MODALS ===================== */}
+          {payslipDriver && (
+            <div className="rv-modal-overlay" onClick={() => setPayslipDriver(null)}>
+              <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
+                <div className="rv-modal-head">
+                  <h3>Payslip · {payslipDriver.full_name}</h3>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={printFromModal} className="rv-pill-btn primary"><Printer size={16} /> Print / Save PDF</button>
+                    <button onClick={() => setPayslipDriver(null)} className="rv-icon-btn"><X size={18} /></button>
                   </div>
                 </div>
-              )}
-
-              {breakdownData.weeks.length === 0 ? <p className="rv-empty">No records for this driver in the selected period.</p> : (
-                <div className="rv-table-scroll">
-                  <table className="rv-table" style={{ fontSize: '12px' }}>
-                    <thead>
-                      <tr>
-                        <th>Date</th><th className="num">Orders</th><th className="num">Km</th>
-                        <th className="num">Earnings</th><th>Bracket</th>
-                        <th className="num">Basic</th>
-                        <th className="num">Pay</th><th className="num">Incentive (separate)</th><th className="num">Running pay total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {breakdownData.weeks.map((wk) => (
-                        <Fragment key={wk.start}>
-                          {wk.rows.map((r) => {
-                            const list = breakdownOrders[r.date] || [];
-                            const open = !collapsedDays.has(r.date);
-                            return (
-                              <Fragment key={r.date}>
-                                <tr className={`rv-click ${r.date === selectedDate ? 'sel' : ''}`} onClick={() => toggleDay(r.date)}>
-                                  <td><span className="rv-chev">{open ? '▾' : '▸'}</span> {weekdayShort(r.date)}, {formatDate(r.date)}</td>
-                                  <td className="num">{r.orders}</td>
-                                  <td className="num">{r.km.toFixed(1)}</td>
-                                  <td className="num">{peso(r.earnings)}</td>
-                                  <td>{bracketLabel(r.bracket)}</td>
-                                  <td className="num">{r.pay ? peso(r.basic) : '-'}</td>
-                                  <td className="num"><strong>{r.pay ? peso(r.pay) : '-'}</strong></td>
-                                  <td className="num">{r.incentive > 0 ? <span style={{ color: r.rate >= IND_TIERS[0].rate ? '#16a34a' : '#b45309', fontWeight: 600 }}>{Math.round(r.rate * 100)}% · {peso(r.incentive)}</span> : '-'}</td>
-                                  <td className="num">{peso(r.running)}</td>
-                                </tr>
-                                {open && (
-                                  <tr className="rv-orders-row">
-                                    <td colSpan="9">
-                                      {ordersLoading ? <p className="rv-orders-empty">Loading orders…</p>
-                                        : ordersError ? <p className="rv-orders-empty">Could not load orders: {ordersError}</p>
-                                        : list.length === 0 ? <p className="rv-orders-empty">No order details stored for this day. Re-upload that day's CSV to see each order.</p>
-                                        : (
-                                          <table className="rv-orders-table">
-                                            <thead>
-                                              <tr><th>#</th><th>Time</th><th>Order</th><th className="num">Km</th><th className="num">Pay</th></tr>
-                                            </thead>
-                                            <tbody>
-                                              {list.map((o) => {
-                                                const raw = o.raw && typeof o.raw === 'object' ? Object.entries(o.raw).filter(([, v]) => String(v ?? '').trim() !== '') : [];
-                                                return (
-                                                  <Fragment key={o.id}>
-                                                    <tr className="rv-click" onClick={() => toggleOrder(o.id)} title="Click for all CSV fields">
-                                                      <td>{o.seq}</td>
-                                                      <td>{orderTime(o) || '-'}</td>
-                                                      <td>{o.order_ref || '-'}</td>
-                                                      <td className="num">{Number(o.distance || 0).toFixed(1)}</td>
-                                                      <td className="num">{peso(o.total_pay)}</td>
-                                                    </tr>
-                                                    {openOrders.has(o.id) && raw.length > 0 && (
-                                                      <tr>
-                                                        <td colSpan="5">
-                                                          <div className="rv-raw-grid">
-                                                            {raw.map(([k, v]) => (
-                                                              <div key={k}><small>{k}</small><span>{String(v)}</span></div>
-                                                            ))}
-                                                          </div>
-                                                        </td>
-                                                      </tr>
-                                                    )}
-                                                  </Fragment>
-                                                );
-                                              })}
-                                            </tbody>
-                                          </table>
-                                        )}
-                                    </td>
-                                  </tr>
-                                )}
-                              </Fragment>
-                            );
-                          })}
-                        </Fragment>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="rv-modal-body">
+                  <p className="rv-sub">SAP {payslipDriver.sap_id} · {dateRangeString} · {periodStatus}</p>
+                  <div style={{ marginTop: 12 }} dangerouslySetInnerHTML={{ __html: buildPayslipSectionHtml(payslipDriver, driverDayRows(payslipDriver.sap_id), dateRangeString, periodStatus, escHtml, moneyFmt, shortDate) }} />
                 </div>
-              )}
-
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12 }}>
-                <button type="button" className="rv-pill-btn" onClick={() => { setBreakdownSap(null); }}>
-                  Close
-                </button>
-                <button type="button" className="rv-pill-btn primary" onClick={openPayslipFromBreakdown}>
-                  <Printer size={16} /> Open Payslip
-                </button>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {/* ===================== PAYSLIP MODAL ===================== */}
-      {payslipDriver && (
-        <div className="rv-modal-overlay" onClick={() => setPayslipDriver(null)}>
-          <div className="rv-modal wide" onClick={(e) => e.stopPropagation()}>
-            <div className="rv-modal-head">
-              <h2>Payslip</h2>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button type="button" className="rv-pill-btn primary" onClick={printFromModal}>
-                  <Printer size={16} /> Print / Save PDF
-                </button>
-                <button onClick={() => setPayslipDriver(null)} className="rv-edit-btn"><X size={18} /></button>
-              </div>
-            </div>
+          {breakdownSap && breakdownData && (
+            <div className="rv-modal-overlay" onClick={() => setBreakdownSap(null)}>
+              <div className="rv-modal rv-modal-lg" onClick={(e) => e.stopPropagation()}>
+                <div className="rv-modal-head">
+                  <h3>Breakdown · {breakdownData.full_name}</h3>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {slipRow && <button onClick={openPayslipFromBreakdown} className="rv-pill-btn"><Printer size={16} /> Payslip</button>}
+                    <button onClick={() => setBreakdownSap(null)} className="rv-icon-btn"><X size={18} /></button>
+                  </div>
+                </div>
+                <div className="rv-modal-body">
+                  <p className="rv-sub">SAP {breakdownData.sap_id} · {dateRangeString} · {breakdownData.days} days</p>
 
-            <div className="rv-modal-body">
-              <div className="rv-payslip-header">
-                <h3>{payslipDriver.full_name}</h3>
-                <p>SAP ID: {payslipDriver.sap_id} · {payslipDriver.team} · Plate: {payslipDriver.plate_number}</p>
-                <p><strong>Period:</strong> {dateRangeString} · <strong>Status:</strong> {periodStatus}</p>
-              </div>
+                  <div className="rv-chips" style={{ marginTop: 12 }}>
+                    <div className="rv-chip"><span>Orders</span><strong>{breakdownData.totals.orders}</strong></div>
+                    <div className="rv-chip"><span>Total KM</span><strong>{breakdownData.totals.km.toFixed(2)} km</strong></div>
+                    <div className="rv-chip"><span>Total Earnings</span><strong>{peso(breakdownData.totals.earnings)}</strong></div>
+                    <div className="rv-chip hl"><span>Basic Pay</span><strong>{peso(breakdownData.totals.pay)}</strong></div>
+                    <div className="rv-chip"><span>Days with Pay</span><strong>{breakdownData.totals.paidDays}</strong></div>
+                  </div>
 
-              <div className="rv-bd-chips">
-                <div className="rv-bd-chip"><span>Days w/ pay</span><strong>{payslipDriver.days_worked}</strong></div>
-                <div className="rv-bd-chip"><span>Total earnings</span><strong>{peso(payslipDriver.total_earnings)}</strong></div>
-                <div className="rv-bd-chip"><span>Basic</span><strong>{peso(payslipDriver.basic)}</strong></div>
-                <div className="rv-bd-chip hl"><span>Total Pay</span><strong>{peso(payslipDriver.total_basic)}</strong></div>
-                <div className="rv-bd-chip"><span>Deductions</span><strong style={{ color: 'var(--red)' }}>-{peso(payslipDriver.total_deductions)}</strong></div>
-                <div className="rv-bd-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>NET PAY</span><strong>{peso(payslipDriver.net_pay)}</strong></div>
-              </div>
-
-              {payslipDriver.weeks && payslipDriver.weeks.length > 0 && (
-                <div className="rv-table-scroll" style={{ marginTop: 12 }}>
-                  <table className="rv-table" style={{ fontSize: '12px' }}>
-                    <thead>
-                      <tr>
-                        <th>Week</th><th>Date</th><th className="num">Orders</th><th className="num">Km</th>
-                        <th className="num">Earnings</th><th>Bracket</th>
-                        <th className="num">Basic</th><th className="num">Pay</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {payslipDriver.weeks.map((wk) => (
-                        <Fragment key={wk.start}>
-                          {wk.rows.map((r) => (
-                            <tr key={r.date}>
-                              <td>{formatDate(wk.start)}</td>
-                              <td>{weekdayShort(r.date)}, {formatDate(r.date)}</td>
-                              <td className="num">{r.orders}</td>
-                              <td className="num">{r.km.toFixed(1)}</td>
-                              <td className="num">{peso(r.earnings)}</td>
-                              <td>{bracketLabel(r.bracket)}</td>
-                              <td className="num">{r.pay ? peso(r.basic) : '-'}</td>
-                              <td className="num"><strong>{r.pay ? peso(r.pay) : '-'}</strong></td>
+                  {breakdownData.weeks.map((wk) => (
+                    <div key={wk.start} style={{ marginTop: 18 }}>
+                      <h4 style={{ marginBottom: 8 }}>Week of {formatDate(wk.start)}</h4>
+                      <div className="rv-table-scroll">
+                        <table className="rv-table">
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th className="num">Orders</th>
+                              <th className="num">KM</th>
+                              <th className="num">Earnings</th>
+                              <th className="num">Basic</th>
+                              <th className="num">Pay</th>
                             </tr>
-                          ))}
-                        </Fragment>
-                      ))}
-                    </tbody>
-                  </table>
+                          </thead>
+                          <tbody>
+                            {wk.rows.map((r) => (
+                              <tr key={r.date}>
+                                <td>{formatDate(r.date)}</td>
+                                <td className="num">{r.orders}</td>
+                                <td className="num">{r.km.toFixed(2)}</td>
+                                <td className="num">{peso(r.earnings)}</td>
+                                <td className="num">{peso(r.basic)}</td>
+                                <td className="num"><strong>{peso(r.pay)}</strong></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              )}
-
-              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 12 }}>
-                <button type="button" className="rv-pill-btn" onClick={() => setPayslipDriver(null)}>Close</button>
-                <button type="button" className="rv-pill-btn primary" onClick={printFromModal}>
-                  <Printer size={16} /> Print / Save PDF
-                </button>
               </div>
             </div>
-          </div>
+          )}
+
+          {incBreakdown && (
+            <div className="rv-modal-overlay" onClick={() => setIncBreakdownSap(null)}>
+              <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
+                <div className="rv-modal-head">
+                  <h3>Incentive Breakdown · {incBreakdown.full_name}</h3>
+                  <button onClick={() => setIncBreakdownSap(null)} className="rv-icon-btn"><X size={18} /></button>
+                </div>
+                <div className="rv-modal-body">
+                  <p className="rv-sub">{incWeekRange}</p>
+                  <div className="rv-table-scroll" style={{ marginTop: 12 }}>
+                    <table className="rv-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th className="num">Orders</th>
+                          <th className="num">Earnings</th>
+                          <th className="num">Rate</th>
+                          <th className="num">Incentive</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {incBreakdown.days.map((d) => (
+                          <tr key={d.date}>
+                            <td>{formatDate(d.date)}</td>
+                            <td className="num">{d.orders}</td>
+                            <td className="num">{peso(d.earnings)}</td>
+                            <td className="num">{d.rate ? `${(d.rate * 100).toFixed(0)}%` : '-'}</td>
+                            <td className="num"><strong>{d.incentive ? peso(d.incentive) : '-'}</strong></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showRangeDelete && (
+            <div className="rv-modal-overlay" onClick={closeRangeDelete}>
+              <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
+                <div className="rv-modal-head">
+                  <h3>Delete Data Range</h3>
+                  <button onClick={closeRangeDelete} className="rv-icon-btn" disabled={deletingRange}><X size={18} /></button>
+                </div>
+                <div className="rv-modal-body">
+                  <p className="rv-note" style={{ marginTop: 0 }}>This will permanently remove uploads, order details, and brackets for every date in the selected range.</p>
+                  <div className="rv-payroll-controls">
+                    <div className="rv-select">
+                      <span className="rv-sub" style={{ margin: 0 }}>From</span>
+                      <select value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)}>
+                        <option value="">Select start date</option>
+                        {availableDates.slice().reverse().map((d) => <option key={`rf-${d}`} value={d}>{formatDate(d)}</option>)}
+                      </select>
+                    </div>
+                    <div className="rv-select">
+                      <span className="rv-sub" style={{ margin: 0 }}>To</span>
+                      <select value={rangeTo} onChange={(e) => setRangeTo(e.target.value)}>
+                        <option value="">Select end date</option>
+                        {availableDates.map((d) => <option key={`rt-${d}`} value={d}>{formatDate(d)}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  {rangeDays.length > 0 && (
+                    <p className="rv-sub" style={{ marginTop: 10 }}>
+                      {rangeDays.length} day{rangeDays.length === 1 ? '' : 's'} with data will be deleted.
+                      {rangeTouchesPaid && <b style={{ color: 'var(--red)' }}> This range overlaps a PAID period — unlock it in Payroll first.</b>}
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', gap: 10, marginTop: 16, justifyContent: 'flex-end' }}>
+                    <button type="button" className="rv-pill-btn" onClick={closeRangeDelete} disabled={deletingRange}>Cancel</button>
+                    <button
+                      type="button"
+                      className="rv-pill-btn rv-danger-btn"
+                      onClick={handleDeleteRange}
+                      disabled={deletingRange || rangeDays.length === 0 || rangeTouchesPaid}
+                    >
+                      <Trash2 size={16} /> {deletingRange ? 'Deleting...' : 'Delete range'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-      )}
-
-      {/* ===================== INCENTIVE BREAKDOWN MODAL ===================== */}
-      {incBreakdown && (
-        <div className="rv-modal-overlay" onClick={() => setIncBreakdownSap(null)}>
-          <div className="rv-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="rv-modal-head">
-              <h2>Incentive Breakdown</h2>
-              <button onClick={() => setIncBreakdownSap(null)} className="rv-edit-btn"><X size={18} /></button>
-            </div>
-            <div className="rv-modal-body">
-              <div className="rv-payslip-header">
-                <h3>{incBreakdown.full_name}</h3>
-                <p>SAP ID: {incBreakdown.sap_id} · {incBreakdown.role || '—'} {incBreakdown.group_name ? `· ${incBreakdown.group_name}` : ''}</p>
-                <p><strong>Week:</strong> {incWeekRange}</p>
-              </div>
-
-              <div className="rv-bd-chips">
-                <div className="rv-bd-chip"><span>Week earnings</span><strong>{peso(incBreakdown.week_earnings)}</strong></div>
-                <div className="rv-bd-chip"><span>Qualified days</span><strong>{incBreakdown.qualifiedDays}</strong></div>
-                <div className="rv-bd-chip hl"><span>Individual incentive</span><strong>{peso(incBreakdown.individual)}</strong></div>
-                <div className="rv-bd-chip"><span>Captain bonus</span><strong>{peso(incBreakdown.captain_bonus)}</strong></div>
-                <div className="rv-bd-chip"><span>Rice</span><strong>{incBreakdown.rice_kg} kg</strong></div>
-                <div className="rv-bd-chip hl" style={{ background: '#16a34a', borderColor: '#16a34a' }}><span>Cash total</span><strong>{peso(incBreakdown.total_cash)}</strong></div>
-              </div>
-
-              <div className="rv-table-scroll" style={{ marginTop: 12 }}>
-                <table className="rv-table" style={{ fontSize: '12px' }}>
-                  <thead>
-                    <tr><th>Date</th><th className="num">Orders</th><th className="num">Earnings</th><th className="num">Rate</th><th className="num">Incentive</th></tr>
-                  </thead>
-                  <tbody>
-                    {incBreakdown.days.map((d) => (
-                      <tr key={d.date}>
-                        <td>{weekdayShort(d.date)}, {formatDate(d.date)}</td>
-                        <td className="num">{d.hasRecord ? d.orders : '-'}</td>
-                        <td className="num">{d.hasRecord ? peso(d.earnings) : '-'}</td>
-                        <td className="num">{d.rate ? `${Math.round(d.rate * 100)}%` : '-'}</td>
-                        <td className="num">{d.incentive ? peso(d.incentive) : '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-                <button type="button" className="rv-pill-btn" onClick={() => setIncBreakdownSap(null)}>Close</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
